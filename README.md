@@ -127,7 +127,3 @@ Once this returns rows, the collector and brain services can be built against re
 - **Read-only fixes can run autonomously.** Non-destructive actions like `ANALYZE` (which can only improve planner statistics, never lose data) are safe to automate without a human in the loop.
 
 ---
-
-## License
-
-TBD
