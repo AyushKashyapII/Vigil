@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: demo
+    ports:
+      - "5432:5432"
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "pg_stat_statements.track=all"
+      - "-c"
+      - "track_io_timing=on"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  demo-app:
+    build: ../demo-app
+    depends_on:
+      - postgres
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/demo
+
+  # TODO: add once collector has real code
+  # collector:
+  #   build: ../collector
+  #   depends_on:
+  #     - postgres
+
+  # TODO: add once brain has real code
+  # brain:
+  #   build: ../brain
+  #   depends_on:
+  #     - postgres
+
+volumes:
+  pgdata:

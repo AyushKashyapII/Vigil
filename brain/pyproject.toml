@@ -1,0 +1,13 @@
+[project]
+name = "vigil_brain"
+version = "0.1.0"
+description = "Vigil brain: parses collector output and drives LLM-based analysis."
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["vigil_brain*"]
