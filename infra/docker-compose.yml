@@ -17,6 +17,10 @@ services:
       - "track_io_timing=on"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   demo-app:
     build: ../demo-app
@@ -26,6 +30,10 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/demo
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   pgbouncer:
     image: edoburu/pgbouncer
@@ -39,6 +47,10 @@ services:
       - "6432:6432"
     depends_on:
       - postgres
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   # TODO: add once collector has real code
   # collector:
