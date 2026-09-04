@@ -127,3 +127,63 @@ Once this returns rows, the collector and brain services can be built against re
 - **Read-only fixes can run autonomously.** Non-destructive actions like `ANALYZE` (which can only improve planner statistics, never lose data) are safe to automate without a human in the loop.
 
 ---
+
+## Demo app
+
+`demo-app/` is a "victim" application that exists purely to generate realistic bad
+query patterns for Vigil to detect and fix. Every endpoint below is deliberately
+inefficient or broken — that's the point, not a bug.
+
+### What each endpoint demonstrates
+
+- `GET /orders-bad` — N+1 queries: fetches orders, then lazy-loads `order.user` per row.
+- `GET /orders-good` — the same result via a single `JOIN`, for comparison.
+- `GET /order-summary-nested/{user_id}` — per-order correlated subqueries instead of a `JOIN` + `GROUP BY`.
+- `GET /orders-by-user/{user_id}` — filters on `orders.user_id`, which has no index.
+- `GET /all-inventory-logs` — returns the entire table, no `LIMIT`, no pagination.
+- `POST /bulk-import-products` — bulk-inserts fake products in one commit, producing stale planner statistics.
+- `GET /reviews-by-product/{product_id}` — filters on `reviews.product_id`, which has no index.
+- `GET /leaky` — opens a raw `Session` outside the request lifecycle and never closes it, leaking a connection.
+- `POST /reserve-stock/{product_id}` — locks product, then order, sleeping in between to widen the race window.
+- `POST /log-order/{order_id}` — locks order, then product (opposite order from above) — pairs with it to produce a deadlock.
+- `POST /slow-transaction` — holds a connection open for 5s on `pg_sleep(5)`; hammer it concurrently to exhaust the pool.
+- `POST /simulate-churn` — rapidly inserts and deletes `inventory_logs` rows to generate dead tuples/bloat, without ever vacuuming.
+- `GET /search-similar-products?q=...` — pgvector similarity search, useful for demonstrating the empty-table HNSW index bug (see below).
+
+Schema-level flaws (applied by `app/db_init.py`, not the endpoints above):
+
+- Duplicate indexes on `products.category` (`idx_products_category` / `idx_products_cat_dup`).
+- An index on `users.last_login_at` that nothing ever queries.
+- An HNSW index on `product_embeddings` built *before* any embeddings exist, reproducing pgvector's empty-table garbage-centroids bug.
+
+### How to run
+
+> **Note:** the run order here differs from a natural "seed first" instinct —
+> `db_init.py` must run *before* `seed.py`, because the HNSW empty-table bug
+> only reproduces if the index is built while `product_embeddings` is still
+> empty.
+
+```bash
+cd infra
+docker compose up -d
+
+cd ../demo-app
+python -m app.db_init      # applies schema + deliberate flaws (must run first)
+python seed.py             # seeds users/products/orders/etc.
+python load.py              # in a separate terminal: generates continuous traffic
+```
+
+To reproduce the deadlock, call `/reserve-stock/{product_id}` and `/log-order/{order_id}`
+**concurrently** (e.g. from two terminals at once) using a product and order that share
+an `order_items` row — look one up first:
+
+```bash
+psql ... -c "SELECT order_id, product_id FROM order_items LIMIT 1;"
+
+# terminal 1
+curl -X POST http://localhost:8000/reserve-stock/<product_id>
+# terminal 2, started immediately after
+curl -X POST http://localhost:8000/log-order/<order_id>
+```
+
+---

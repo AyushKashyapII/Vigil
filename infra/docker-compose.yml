@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -26,6 +26,19 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/demo
+
+  pgbouncer:
+    image: edoburu/pgbouncer
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/demo
+      # NOTE: "session" is deliberately the wrong pool mode for this
+      # workload -- a test case for Vigil to recommend "transaction" instead.
+      POOL_MODE: session
+      MAX_CLIENT_CONN: 100
+    ports:
+      - "6432:6432"
+    depends_on:
+      - postgres
 
   # TODO: add once collector has real code
   # collector:
