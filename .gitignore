@@ -32,3 +32,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# a file to learn things along the way i wont be relaising it just for my own learning process
+*learning-log.md 
