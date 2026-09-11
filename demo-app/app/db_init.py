@@ -23,6 +23,9 @@ from app.database import Base, engine
 def main() -> None:
     with engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+        # shared_preload_libraries loads the library into the server process,
+        # but the SQL-visible view still needs to be registered per database.
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_stat_statements;"))
 
     Base.metadata.create_all(bind=engine)
 
