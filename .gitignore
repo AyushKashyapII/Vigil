@@ -1,4 +1,5 @@
 # Go
+*.db
 *.exe
 *.exe~
 *.dll
