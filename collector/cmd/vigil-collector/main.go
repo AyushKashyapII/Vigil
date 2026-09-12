@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ayushkashyap/vigil/collector/internal/metrics"
+	"github.com/ayushkashyap/vigil/collector/internal/rules"
 )
 
 const pollInterval = 5 * time.Second
@@ -36,6 +37,10 @@ func main() {
 			for _, d := range deltas {
 				fmt.Printf("queryid=%d delta_calls=%d delta_total_exec_time=%.2fms interval_mean_exec_time=%.2fms delta_rows=%d interval_mean_rows=%.1f query=%q\n",
 					d.QueryID, d.DeltaCalls, d.DeltaTotalExecTime, d.IntervalMeanExecTime, d.DeltaRows, d.IntervalMeanRows, d.Query)
+			}
+
+			for _, f := range rules.Evaluate(deltas) {
+				fmt.Printf("FINDING [%s] queryid=%d: %s\n  query=%q\n", f.Rule, f.QueryID, f.Detail, f.Query)
 			}
 		}
 

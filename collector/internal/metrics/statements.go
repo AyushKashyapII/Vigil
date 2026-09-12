@@ -19,13 +19,16 @@ type StatementStat struct {
 }
 
 // PollStatements runs a single snapshot query against pg_stat_statements,
-// returning the top statements by total execution time.
+// returning every statement Postgres is currently tracking. No LIMIT here
+// on purpose: filtering to "the top N by total time" would decide which
+// queries matter before the poller/rules ever get a chance to look --
+// which would silently hide exactly the cheap-but-frequent queries an N+1
+// rule needs to see. Relevance is the rules' job, not this query's.
 func PollStatements(ctx context.Context, pool *pgxpool.Pool) ([]StatementStat, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT queryid, query, calls, total_exec_time, mean_exec_time, rows
 		FROM pg_stat_statements
 		ORDER BY total_exec_time DESC
-		LIMIT 10
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("querying pg_stat_statements: %w", err)
