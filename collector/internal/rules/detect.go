@@ -14,6 +14,9 @@ const (
 	// NPlusOneMaxRowsPerCall is the maximum average rows-per-call for a
 	// query to still look like a single-row lookup.
 	NPlusOneMaxRowsPerCall = 2.0
+	// UnboundedMinRowsPerCall is the average rows-per-call above which a
+	// query looks like it's missing a LIMIT.
+	UnboundedMinRowsPerCall = 100.0
 )
 
 // Finding is a single rule match against a statement's delta. It's a
@@ -62,6 +65,22 @@ func DetectPossibleNPlusOne(d metrics.StatementDelta) (Finding, bool) {
 	return Finding{}, false
 }
 
+// DetectUnboundedQuery flags a query returning a large number of rows per
+// call, on average -- the signature of a missing LIMIT/pagination. Unlike
+// the N+1 rule, call count doesn't matter here: even a single call pulling
+// thousands of rows is already expensive in disk I/O, network, and memory.
+func DetectUnboundedQuery(d metrics.StatementDelta) (Finding, bool) {
+	if d.IntervalMeanRows >= UnboundedMinRowsPerCall {
+		return Finding{
+			QueryID: d.QueryID,
+			Query:   d.Query,
+			Rule:    "possible_unbounded_query",
+			Detail:  fmt.Sprintf("avg %.1f rows/call over %d calls this interval", d.IntervalMeanRows, d.DeltaCalls),
+		}, true
+	}
+	return Finding{}, false
+}
+
 // Evaluate runs every rule against each delta and returns all findings.
 func Evaluate(deltas []metrics.StatementDelta) []Finding {
 	var findings []Finding
@@ -70,6 +89,9 @@ func Evaluate(deltas []metrics.StatementDelta) []Finding {
 			findings = append(findings, f)
 		}
 		if f, ok := DetectPossibleNPlusOne(d); ok {
+			findings = append(findings, f)
+		}
+		if f, ok := DetectUnboundedQuery(d); ok {
 			findings = append(findings, f)
 		}
 	}
