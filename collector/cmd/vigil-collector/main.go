@@ -39,8 +39,17 @@ func main() {
 					d.QueryID, d.DeltaCalls, d.DeltaTotalExecTime, d.IntervalMeanExecTime, d.DeltaRows, d.IntervalMeanRows, d.Query)
 			}
 
-			for _, f := range rules.Evaluate(deltas) {
-				fmt.Printf("FINDING [%s] queryid=%d: %s\n  query=%q\n", f.Rule, f.QueryID, f.Detail, f.Query)
+			for _, f := range rules.EvaluateStatements(deltas) {
+				fmt.Printf("FINDING [%s] %s: %s\n  query=%q\n", f.Rule, f.Subject, f.Detail, f.Query)
+			}
+		}
+
+		activity, err := metrics.PollActivity(ctx, pool)
+		if err != nil {
+			fmt.Println("failed to poll pg_stat_activity:", err)
+		} else {
+			for _, f := range rules.EvaluateActivity(activity) {
+				fmt.Printf("FINDING [%s] %s: %s\n  query=%q\n", f.Rule, f.Subject, f.Detail, f.Query)
 			}
 		}
 
