@@ -1,5 +1,7 @@
 # Go
 *.db
+# scratch verification programs (e.g. collector/cmd/tmp-index-check)
+**/cmd/tmp-*/
 *.exe
 *.exe~
 *.dll

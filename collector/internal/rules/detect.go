@@ -28,6 +28,10 @@ const (
 	// scan above which a scan is considered expensive, not a trivial scan
 	// of a small table.
 	MissingIndexMinRowsPerScan = 1000.0
+	// UnusedIndexMinDuration is how long an index's usage count must stay
+	// unchanged before it's flagged as a candidate to drop. Duration only
+	// -- doesn't weigh maintenance cost (see ROADMAP.md).
+	UnusedIndexMinDuration = 10 * 24 * time.Hour
 )
 
 // Finding is a single rule match -- a candidate worth a human (or the
@@ -131,6 +135,20 @@ func DetectMissingIndex(t metrics.TableDelta) (Finding, bool) {
 	return Finding{}, false
 }
 
+// DetectUnusedIndex flags an index whose usage count has stayed unchanged
+// for a long time -- a candidate to drop. This is duration-only, not a
+// full cost/benefit judgment (see ROADMAP.md for why that's deferred).
+func DetectUnusedIndex(idx metrics.IndexDelta) (Finding, bool) {
+	if idx.UnusedFor >= UnusedIndexMinDuration {
+		return Finding{
+			Rule:    "possible_unused_index",
+			Subject: fmt.Sprintf("index=%s.%s", idx.SchemaName, idx.IndexName),
+			Detail:  fmt.Sprintf("unused for %s (idx_scan=%d, table=%s)", idx.UnusedFor.Round(time.Hour), idx.IdxScan, idx.TableName),
+		}, true
+	}
+	return Finding{}, false
+}
+
 // EvaluateStatements runs every pg_stat_statements-based rule against each
 // delta and returns all findings.
 func EvaluateStatements(deltas []metrics.StatementDelta) []Finding {
@@ -167,6 +185,18 @@ func EvaluateTables(deltas []metrics.TableDelta) []Finding {
 	var findings []Finding
 	for _, t := range deltas {
 		if f, ok := DetectMissingIndex(t); ok {
+			findings = append(findings, f)
+		}
+	}
+	return findings
+}
+
+// EvaluateIndexes runs every pg_stat_user_indexes-based rule against each
+// index delta and returns all findings.
+func EvaluateIndexes(deltas []metrics.IndexDelta) []Finding {
+	var findings []Finding
+	for _, idx := range deltas {
+		if f, ok := DetectUnusedIndex(idx); ok {
 			findings = append(findings, f)
 		}
 	}
