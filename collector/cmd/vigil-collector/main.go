@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/ayushkashyap/vigil/collector/internal/metrics"
@@ -20,14 +21,14 @@ func main() {
 	pool, err := metrics.OpenPool(ctx)
 	if err != nil {
 		fmt.Println("failed to connect:", err)
-		return
+		os.Exit(1)
 	}
 	defer pool.Close()
 
 	st, err := store.Open()
 	if err != nil {
 		fmt.Println("failed to open store:", err)
-		return
+		os.Exit(1)
 	}
 	defer st.Close()
 
