@@ -33,6 +33,7 @@ func main() {
 	defer st.Close()
 
 	poller := metrics.NewPoller()
+	tablePoller := metrics.NewTablePoller()
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
@@ -56,6 +57,17 @@ func main() {
 			fmt.Println("failed to poll pg_stat_activity:", err)
 		} else {
 			reportFindings(ctx, st, rules.EvaluateActivity(activity))
+		}
+
+		tableDeltas, err := tablePoller.PollDeltas(ctx, pool)
+		if err != nil {
+			fmt.Println("failed to poll pg_stat_user_tables:", err)
+		} else {
+			for _, t := range tableDeltas {
+				fmt.Printf("table=%s.%s delta_seq_scan=%d delta_seq_tup_read=%d interval_mean_seq_tup_read=%.1f delta_idx_scan=%d\n",
+					t.SchemaName, t.TableName, t.DeltaSeqScan, t.DeltaSeqTupRead, t.IntervalMeanSeqTupRead, t.DeltaIdxScan)
+			}
+			reportFindings(ctx, st, rules.EvaluateTables(tableDeltas))
 		}
 
 		<-ticker.C

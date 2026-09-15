@@ -21,6 +21,13 @@ const (
 	// IdleInTransactionMaxDuration is how long a connection can sit in
 	// "idle in transaction" before it's flagged as a likely leak.
 	IdleInTransactionMaxDuration = 5 * time.Second
+	// MissingIndexMinSeqScans is the minimum sequential scans per poll
+	// interval before a table is even considered for this heuristic.
+	MissingIndexMinSeqScans = 1
+	// MissingIndexMinRowsPerScan is the average rows read per sequential
+	// scan above which a scan is considered expensive, not a trivial scan
+	// of a small table.
+	MissingIndexMinRowsPerScan = 1000.0
 )
 
 // Finding is a single rule match -- a candidate worth a human (or the
@@ -107,6 +114,23 @@ func DetectIdleInTransaction(a metrics.ActivitySnapshot) (Finding, bool) {
 	return Finding{}, false
 }
 
+// DetectMissingIndex flags a table getting sequentially scanned often and
+// expensively -- the signature of a query filtering on a column with no
+// index, forcing Postgres to read most/all of the table to find matches.
+// Call count doesn't gate this the way it does for N+1: even one seq scan
+// reading a huge number of rows is worth flagging, same reasoning as
+// DetectUnboundedQuery.
+func DetectMissingIndex(t metrics.TableDelta) (Finding, bool) {
+	if t.DeltaSeqScan >= MissingIndexMinSeqScans && t.IntervalMeanSeqTupRead >= MissingIndexMinRowsPerScan {
+		return Finding{
+			Rule:    "possible_missing_index",
+			Subject: fmt.Sprintf("table=%s.%s", t.SchemaName, t.TableName),
+			Detail:  fmt.Sprintf("%d sequential scans this interval, avg %.0f rows read per scan", t.DeltaSeqScan, t.IntervalMeanSeqTupRead),
+		}, true
+	}
+	return Finding{}, false
+}
+
 // EvaluateStatements runs every pg_stat_statements-based rule against each
 // delta and returns all findings.
 func EvaluateStatements(deltas []metrics.StatementDelta) []Finding {
@@ -131,6 +155,18 @@ func EvaluateActivity(snapshots []metrics.ActivitySnapshot) []Finding {
 	var findings []Finding
 	for _, a := range snapshots {
 		if f, ok := DetectIdleInTransaction(a); ok {
+			findings = append(findings, f)
+		}
+	}
+	return findings
+}
+
+// EvaluateTables runs every pg_stat_user_tables-based rule against each
+// table delta and returns all findings.
+func EvaluateTables(deltas []metrics.TableDelta) []Finding {
+	var findings []Finding
+	for _, t := range deltas {
+		if f, ok := DetectMissingIndex(t); ok {
 			findings = append(findings, f)
 		}
 	}
