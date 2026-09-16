@@ -5,6 +5,18 @@ have to rediscover them later. Not in priority order. When something gets
 picked up, move it out of here into the actual work.
 
 ## Rule refinements
+- **Stale planner statistics detection was never built, for the same
+  reason bloat detection is disabled.** The idea: `pg_stat_user_tables.
+  n_mod_since_analyze` (rows changed since the last `ANALYZE`) as a
+  fraction of table size would flag a table the planner's row-count
+  estimates can no longer trust -- directly relevant to `/bulk-import-
+  products`, which was built specifically to cause this. But autovacuum
+  has a separate auto-analyze trigger (`autovacuum_analyze_scale_factor`,
+  default ~10% modified) that resets `n_mod_since_analyze` back down when
+  it fires -- the same race we already hit with bloat, predictable in
+  advance this time. Needs the same realistic (bigger/busier, or
+  auto-analyze deliberately disabled for a controlled test) scenario
+  before it's worth building, not just adding for its own sake.
 - **Bloat detection is built but disabled (commented out, not deleted) --
   needs a realistic test before it can be trusted.** Code lives in
   `tables.go`/`table_poller.go`/`detect.go` (`DetectBloat`,
@@ -32,9 +44,15 @@ picked up, move it out of here into the actual work.
   delta with `delta_calls=0` but `delta_total_exec_time=-0.01ms` and
   `delta_rows=-1`. Cosmetic so far, but the guard should probably check
   every counter field, not just the primary one.
-- **Duplicate index detection** (via `pg_indexes`, comparing table+columns+
-  method across indexes) -- structurally different from every rule so far:
-  a definition comparison, not a threshold on a number.
+- **Duplicate index detection -- deliberately deprioritized, not just
+  deferred.** Every rule built so far detects something only visible by
+  observing behavior *over time* (call rates, idle duration, scan
+  patterns). A duplicate index is visible the instant it's created, from
+  the schema alone -- no polling or time-series data needed. That makes it
+  a different *kind* of tool (a schema/migration linter, or a one-time
+  audit check), not a fit for a runtime-monitoring agent's continuous poll
+  loop. Worth reconsidering only if Vigil ever grows a separate one-time
+  "schema audit" mode, distinct from the rules that run every poll cycle.
 
 ## Infrastructure / hardening
 - **Unused-index tracking state is in-memory only for v1** (a map, like
