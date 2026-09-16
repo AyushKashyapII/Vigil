@@ -5,6 +5,19 @@ have to rediscover them later. Not in priority order. When something gets
 picked up, move it out of here into the actual work.
 
 ## Rule refinements
+- **Bloat detection is built but disabled (commented out, not deleted) --
+  needs a realistic test before it can be trusted.** Code lives in
+  `tables.go`/`table_poller.go`/`detect.go` (`DetectBloat`,
+  `BloatMinDeadRatio`/`BloatMinDeadTuples`), all commented out. Twice in
+  testing on the demo app's small `inventory_logs` table, autovacuum
+  cleaned up dead tuples before our threshold (20% dead, 1000+ dead
+  tuples) was ever crossed -- the rule was never honestly exercised
+  catching something real, only forced by manually disabling autovacuum.
+  Before re-enabling: test against a bigger table and/or heavier
+  concurrent write load, where autovacuum's default 20%-of-table trigger
+  genuinely can't keep up (the realistic case this rule is meant for --
+  large/busy tables, or autovacuum blocked by a long-running transaction,
+  not small lightly-loaded ones).
 - **Unused-index detection should eventually weigh maintenance cost, not
   just usage duration.** An index can get occasional real use and still be
   a net loss, since every INSERT/UPDATE/DELETE on the table pays a write

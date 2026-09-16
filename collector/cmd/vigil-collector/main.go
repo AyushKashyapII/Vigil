@@ -78,6 +78,8 @@ func main() {
 			fmt.Println("failed to poll pg_stat_user_tables:", err)
 		} else {
 			for _, t := range tableDeltas {
+				// n_live_tup/n_dead_tup dropped from this line -- bloat
+				// detection disabled, see ROADMAP.md.
 				fmt.Printf("table=%s.%s delta_seq_scan=%d delta_seq_tup_read=%d interval_mean_seq_tup_read=%.1f delta_idx_scan=%d\n",
 					t.SchemaName, t.TableName, t.DeltaSeqScan, t.DeltaSeqTupRead, t.IntervalMeanSeqTupRead, t.DeltaIdxScan)
 			}

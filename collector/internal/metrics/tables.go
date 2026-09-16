@@ -18,6 +18,13 @@ type TableStat struct {
 	SeqScan    int64
 	SeqTupRead int64
 	IdxScan    int64
+	// NLiveTup and NDeadTup (bloat detection) are disabled pending testing
+	// on a larger/busier table -- autovacuum won the race against our test
+	// churn on this small demo table, so the rule was never honestly
+	// exercised. See ROADMAP.md. Commented out, not deleted -- the poll
+	// query and Scan call below are reverted to match.
+	// NLiveTup int64
+	// NDeadTup int64
 }
 
 // PollTables returns every user table's stats. No filtering here, same

@@ -32,6 +32,14 @@ const (
 	// unchanged before it's flagged as a candidate to drop. Duration only
 	// -- doesn't weigh maintenance cost (see ROADMAP.md).
 	UnusedIndexMinDuration = 10 * 24 * time.Hour
+	// Bloat detection (BloatMinDeadRatio, BloatMinDeadTuples) is disabled
+	// -- see DetectBloat below and ROADMAP.md. Twice in testing,
+	// autovacuum cleaned up dead tuples before this rule's threshold was
+	// ever crossed on our small demo table, so the rule was never
+	// honestly exercised. Needs a bigger/busier table to trust before
+	// re-enabling.
+	// BloatMinDeadRatio  = 0.20
+	// BloatMinDeadTuples = 1000
 )
 
 // Finding is a single rule match -- a candidate worth a human (or the
@@ -179,6 +187,32 @@ func EvaluateActivity(snapshots []metrics.ActivitySnapshot) []Finding {
 	return findings
 }
 
+// DetectBloat flags a table with a high proportion of dead tuples relative
+// to live ones -- a candidate for VACUUM. This is a snapshot ratio, not a
+// rate: it reflects the table's current state, not what changed this
+// interval.
+//
+// Disabled pending a more realistic test -- see the note on the
+// Bloat* constants above and ROADMAP.md. Commented out rather than
+// deleted, along with its wiring in EvaluateTables and the NLiveTup/
+// NDeadTup fields it depended on (tables.go, table_poller.go).
+//
+// func DetectBloat(t metrics.TableDelta) (Finding, bool) {
+// 	total := t.NLiveTup + t.NDeadTup
+// 	if total == 0 || t.NDeadTup < BloatMinDeadTuples {
+// 		return Finding{}, false
+// 	}
+// 	ratio := float64(t.NDeadTup) / float64(total)
+// 	if ratio >= BloatMinDeadRatio {
+// 		return Finding{
+// 			Rule:    "possible_bloat",
+// 			Subject: fmt.Sprintf("table=%s.%s", t.SchemaName, t.TableName),
+// 			Detail:  fmt.Sprintf("%.0f%% dead tuples (%d dead / %d live)", ratio*100, t.NDeadTup, t.NLiveTup),
+// 		}, true
+// 	}
+// 	return Finding{}, false
+// }
+
 // EvaluateTables runs every pg_stat_user_tables-based rule against each
 // table delta and returns all findings.
 func EvaluateTables(deltas []metrics.TableDelta) []Finding {
@@ -187,6 +221,9 @@ func EvaluateTables(deltas []metrics.TableDelta) []Finding {
 		if f, ok := DetectMissingIndex(t); ok {
 			findings = append(findings, f)
 		}
+		// if f, ok := DetectBloat(t); ok {
+		// 	findings = append(findings, f)
+		// }
 	}
 	return findings
 }

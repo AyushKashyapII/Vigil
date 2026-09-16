@@ -14,6 +14,9 @@ type prevTableStats struct {
 
 // TableDelta is the change in a table's scan stats between the previous
 // poll and this one.
+//
+// NLiveTup/NDeadTup (bloat detection) are disabled -- see the note in
+// tables.go and ROADMAP.md -- commented out here to match.
 type TableDelta struct {
 	RelID                  uint32
 	SchemaName             string
@@ -22,6 +25,8 @@ type TableDelta struct {
 	DeltaSeqTupRead        int64
 	IntervalMeanSeqTupRead float64 // rows read per seq scan; 0 if DeltaSeqScan == 0
 	DeltaIdxScan           int64
+	// NLiveTup int64
+	// NDeadTup int64
 }
 
 // TablePoller tracks pg_stat_user_tables snapshots across polls, same
@@ -68,6 +73,8 @@ func (p *TablePoller) PollDeltas(ctx context.Context, pool *pgxpool.Pool) ([]Tab
 				DeltaSeqTupRead:        deltaSeqTupRead,
 				IntervalMeanSeqTupRead: intervalMeanSeqTupRead,
 				DeltaIdxScan:           deltaIdxScan,
+				// NLiveTup: t.NLiveTup,
+				// NDeadTup: t.NDeadTup,
 			})
 		}
 
