@@ -60,6 +60,16 @@ picked up, move it out of here into the actual work.
   far.
 - **PgBouncer pool-mode recommendation** -- needs PgBouncer's own admin
   console (a separate connection, separate protocol), not Postgres at all.
+- **Nothing in this stack actually routes through PgBouncer.** `demo-app`
+  and the collector both connect straight to `postgres:5432`;
+  `docker-compose.yml`'s `pgbouncer` service is running but bypassed by
+  every real connection. This limits how meaningful
+  `approaching_max_connections` and the not-yet-built PgBouncer pool-mode
+  rule really are right now -- there's no pooling layer in the path to
+  reason about. Fixing this (pointing app/collector traffic at
+  `pgbouncer:6432` instead) would make both rules test against something
+  real, and would also make the deliberately-wrong `POOL_MODE: session`
+  test case actually exercised rather than just sitting unused in config.
 
 ## Entirely unbuilt (beyond collector)
 - `brain` (Python/LLM component) -- still an empty stub.

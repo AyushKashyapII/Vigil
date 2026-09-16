@@ -36,6 +36,15 @@ func main() {
 	}
 	defer pool.Close()
 
+	// max_connections only changes on a Postgres restart, so it's fetched
+	// once here rather than polled every cycle. Non-fatal if it fails --
+	// the connection-count rule just won't fire (DetectApproachingMax
+	// Connections treats max==0 as "nothing to check against").
+	maxConnections, err := metrics.MaxConnections(ctx, pool)
+	if err != nil {
+		fmt.Println("failed to fetch max_connections:", err)
+	}
+
 	st, err := store.Open()
 	if err != nil {
 		fmt.Println("failed to open store:", err)
@@ -71,6 +80,7 @@ func main() {
 			fmt.Println("failed to poll pg_stat_activity:", err)
 		} else {
 			reportFindings(ctx, st, rules.EvaluateActivity(activity))
+			reportFindings(ctx, st, rules.EvaluateConnectionCount(len(activity), maxConnections))
 		}
 
 		tableDeltas, err := tablePoller.PollDeltas(ctx, pool)

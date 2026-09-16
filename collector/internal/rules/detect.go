@@ -21,6 +21,9 @@ const (
 	// IdleInTransactionMaxDuration is how long a connection can sit in
 	// "idle in transaction" before it's flagged as a likely leak.
 	IdleInTransactionMaxDuration = 5 * time.Second
+	// ApproachingMaxConnectionsRatio is the fraction of max_connections in
+	// use above which the database is flagged as approaching its limit.
+	ApproachingMaxConnectionsRatio = 0.8
 	// MissingIndexMinSeqScans is the minimum sequential scans per poll
 	// interval before a table is even considered for this heuristic.
 	MissingIndexMinSeqScans = 1
@@ -124,6 +127,38 @@ func DetectIdleInTransaction(a metrics.ActivitySnapshot) (Finding, bool) {
 		}, true
 	}
 	return Finding{}, false
+}
+
+// DetectApproachingMaxConnections flags the database as a whole -- not a
+// single query, table, or connection -- when open connections are
+// approaching max_connections. Structurally different from every rule
+// above: those each judge one row; this judges an aggregate (a count)
+// against a server-wide limit, so it takes plain numbers, not a metrics
+// type.
+func DetectApproachingMaxConnections(current, max int) (Finding, bool) {
+	if max == 0 {
+		return Finding{}, false
+	}
+	ratio := float64(current) / float64(max)
+	if ratio >= ApproachingMaxConnectionsRatio {
+		return Finding{
+			Rule:    "approaching_max_connections",
+			Subject: "database",
+			Detail:  fmt.Sprintf("%d/%d connections in use (%.0f%%)", current, max, ratio*100),
+		}, true
+	}
+	return Finding{}, false
+}
+
+// EvaluateConnectionCount runs the max-connections check. A single-item
+// slice, not a loop over rows, to match the calling convention every
+// other Evaluate* function uses in main.go.
+func EvaluateConnectionCount(current, max int) []Finding {
+	var findings []Finding
+	if f, ok := DetectApproachingMaxConnections(current, max); ok {
+		findings = append(findings, f)
+	}
+	return findings
 }
 
 // DetectMissingIndex flags a table getting sequentially scanned often and

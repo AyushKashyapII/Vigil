@@ -52,3 +52,16 @@ func PollActivity(ctx context.Context, pool *pgxpool.Pool) ([]ActivitySnapshot, 
 
 	return snapshots, nil
 }
+
+// MaxConnections returns Postgres's max_connections setting. This is a
+// server config value that only changes on a Postgres restart, so it's
+// meant to be fetched once at startup, not polled every cycle like
+// everything else in this package.
+func MaxConnections(ctx context.Context, pool *pgxpool.Pool) (int, error) {
+	var max int
+	err := pool.QueryRow(ctx, `SELECT setting::int FROM pg_settings WHERE name = 'max_connections'`).Scan(&max)
+	if err != nil {
+		return 0, fmt.Errorf("querying max_connections: %w", err)
+	}
+	return max, nil
+}
