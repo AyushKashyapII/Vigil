@@ -1,11 +1,11 @@
 """
 Seeds the demo database with realistic volumes of data.
 
-Run this AFTER app/db_init.py -- the HNSW index created there needs to be
-built on an empty product_embeddings table for the empty-table pgvector
-bug to reproduce. Run from the demo-app/ directory as:
+Run this AFTER applying migrations -- the HNSW index created by migration
+0002 needs to be built on an empty product_embeddings table for the
+empty-table pgvector bug to reproduce. Run from the demo-app/ directory as:
 
-    python -m app.db_init
+    alembic upgrade head
     python seed.py
 """
 

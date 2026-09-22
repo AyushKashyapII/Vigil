@@ -150,16 +150,18 @@ inefficient or broken — that's the point, not a bug.
 - `POST /simulate-churn` — rapidly inserts and deletes `inventory_logs` rows to generate dead tuples/bloat, without ever vacuuming.
 - `GET /search-similar-products?q=...` — pgvector similarity search, useful for demonstrating the empty-table HNSW index bug (see below).
 
-Schema-level flaws (applied by `app/db_init.py`, not the endpoints above):
+Schema-level flaws (applied by the `0002_deliberate_flaws` migration, not the endpoints above):
 
 - Duplicate indexes on `products.category` (`idx_products_category` / `idx_products_cat_dup`).
 - An index on `users.last_login_at` that nothing ever queries.
 - An HNSW index on `product_embeddings` built *before* any embeddings exist, reproducing pgvector's empty-table garbage-centroids bug.
 
+Schema is managed by [Alembic](https://alembic.sqlalchemy.org/) (`demo-app/alembic/`), not an ad-hoc script — `0001_initial_schema` creates the real tables (matching `app/models.py` exactly), `0002_deliberate_flaws` layers the intentional flaws on top, mirroring the same split the old setup script used to have.
+
 ### How to run
 
 > **Note:** the run order here differs from a natural "seed first" instinct —
-> `db_init.py` must run *before* `seed.py`, because the HNSW empty-table bug
+> migrations must run *before* `seed.py`, because the HNSW empty-table bug
 > only reproduces if the index is built while `product_embeddings` is still
 > empty.
 
@@ -168,9 +170,9 @@ cd infra
 docker compose up -d
 
 cd ../demo-app
-python -m app.db_init      # applies schema + deliberate flaws (must run first)
-python seed.py             # seeds users/products/orders/etc.
-python load.py              # in a separate terminal: generates continuous traffic
+alembic upgrade head        # applies schema + deliberate flaws (must run first)
+python seed.py               # seeds users/products/orders/etc.
+python load.py                # in a separate terminal: generates continuous traffic
 ```
 
 To reproduce the deadlock, call `/reserve-stock/{product_id}` and `/log-order/{order_id}`
