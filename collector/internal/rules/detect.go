@@ -2,6 +2,7 @@ package rules
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -81,7 +82,19 @@ func DetectNestedSubquery(d metrics.StatementDelta) (Finding, bool) {
 // single-row lookup (e.g. a session/auth check called once per request),
 // which has the identical shape. Treat this as "worth investigating," not
 // "confirmed bug."
+//
+// Only considers statements that look like a SELECT (case-insensitive
+// prefix match -- a known limitation: a CTE-prefixed `WITH ... SELECT`
+// won't match). Without this, transaction-control statements
+// (BEGIN/COMMIT/ROLLBACK) trivially satisfy "high calls, ~0 rows" under
+// heavy write traffic -- they're not row-returning queries at all, so
+// they should never have been eligible, not just a coincidental false
+// positive. Found via real testing (a heavy simulate-churn run), not
+// anticipated when this rule was first built.
 func DetectPossibleNPlusOne(d metrics.StatementDelta) (Finding, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(strings.ToUpper(d.Query)), "SELECT") {
+		return Finding{}, false
+	}
 	if d.DeltaCalls >= NPlusOneMinCalls && d.IntervalMeanRows <= NPlusOneMaxRowsPerCall {
 		return Finding{
 			Rule:    "possible_n_plus_one",
@@ -161,17 +174,53 @@ func EvaluateConnectionCount(current, max int) []Finding {
 	return findings
 }
 
+// filterColumnRe matches a simple equality filter like "WHERE orders.user_id
+// = $1" or "WHERE user_id = $1", capturing just the column name.
+var filterColumnRe = regexp.MustCompile(`(?i)WHERE\s+(?:\w+\.)?(\w+)\s*=\s*\$\d+`)
+
+// findFilterColumn searches statements (the same poll cycle's
+// pg_stat_statements deltas) for a query that references tableName and
+// has a simple equality WHERE filter, returning the filtered column.
+//
+// This is a text-pattern heuristic, not real SQL parsing -- same spirit
+// as DetectNestedSubquery's SELECT-counting. It only recognizes a single
+// `column = $N` equality filter, which is exactly the shape
+// /orders-by-user and friends generate, but won't catch multi-condition
+// WHERE clauses, joins, or non-equality filters. Returns ok=false rather
+// than guessing when nothing confident is found.
+func findFilterColumn(tableName string, statements []metrics.StatementDelta) (string, bool) {
+	lowerTable := strings.ToLower(tableName)
+	for _, s := range statements {
+		if !strings.Contains(strings.ToLower(s.Query), lowerTable) {
+			continue
+		}
+		if match := filterColumnRe.FindStringSubmatch(s.Query); match != nil {
+			return match[1], true
+		}
+	}
+	return "", false
+}
+
 // DetectMissingIndex flags a table getting sequentially scanned often and
 // expensively -- the signature of a query filtering on a column with no
 // index, forcing Postgres to read most/all of the table to find matches.
 // Call count doesn't gate this the way it does for N+1: even one seq scan
 // reading a huge number of rows is worth flagging, same reasoning as
 // DetectUnboundedQuery.
-func DetectMissingIndex(t metrics.TableDelta) (Finding, bool) {
+//
+// statements is the same poll cycle's pg_stat_statements deltas, used to
+// try to identify the actual filtered column via findFilterColumn. When
+// no confident match is found, the finding still fires, just without a
+// column -- an honest "couldn't tell" rather than a guess.
+func DetectMissingIndex(t metrics.TableDelta, statements []metrics.StatementDelta) (Finding, bool) {
 	if t.DeltaSeqScan >= MissingIndexMinSeqScans && t.IntervalMeanSeqTupRead >= MissingIndexMinRowsPerScan {
+		subject := fmt.Sprintf("table=%s.%s", t.SchemaName, t.TableName)
+		if column, ok := findFilterColumn(t.TableName, statements); ok {
+			subject = fmt.Sprintf("%s column=%s", subject, column)
+		}
 		return Finding{
 			Rule:    "possible_missing_index",
-			Subject: fmt.Sprintf("table=%s.%s", t.SchemaName, t.TableName),
+			Subject: subject,
 			Detail:  fmt.Sprintf("%d sequential scans this interval, avg %.0f rows read per scan", t.DeltaSeqScan, t.IntervalMeanSeqTupRead),
 		}, true
 	}
@@ -249,11 +298,13 @@ func EvaluateActivity(snapshots []metrics.ActivitySnapshot) []Finding {
 // }
 
 // EvaluateTables runs every pg_stat_user_tables-based rule against each
-// table delta and returns all findings.
-func EvaluateTables(deltas []metrics.TableDelta) []Finding {
+// table delta and returns all findings. statements is the same poll
+// cycle's pg_stat_statements deltas, passed through to DetectMissingIndex
+// for column correlation.
+func EvaluateTables(deltas []metrics.TableDelta, statements []metrics.StatementDelta) []Finding {
 	var findings []Finding
 	for _, t := range deltas {
-		if f, ok := DetectMissingIndex(t); ok {
+		if f, ok := DetectMissingIndex(t, statements); ok {
 			findings = append(findings, f)
 		}
 		// if f, ok := DetectBloat(t); ok {

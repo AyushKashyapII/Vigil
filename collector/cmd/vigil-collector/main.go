@@ -93,7 +93,7 @@ func main() {
 				fmt.Printf("table=%s.%s delta_seq_scan=%d delta_seq_tup_read=%d interval_mean_seq_tup_read=%.1f delta_idx_scan=%d\n",
 					t.SchemaName, t.TableName, t.DeltaSeqScan, t.DeltaSeqTupRead, t.IntervalMeanSeqTupRead, t.DeltaIdxScan)
 			}
-			reportFindings(ctx, st, rules.EvaluateTables(tableDeltas))
+			reportFindings(ctx, st, rules.EvaluateTables(tableDeltas, deltas))
 		}
 
 		if (tick-1)%ticksPerIndexPoll == 0 {

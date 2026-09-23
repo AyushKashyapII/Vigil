@@ -36,3 +36,18 @@ def read_findings() -> list[Finding]:
         return [Finding(*row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+def latest_by_subject(findings: list[Finding]) -> list[Finding]:
+    """Keeps only the most recent finding per (rule, subject) pair.
+
+    The same problem (e.g. the same unused index) gets flagged repeatedly
+    across poll cycles. For proposing fixes, only the latest instance of
+    each is useful -- not one identical suggestion per historical
+    occurrence. Relies on findings being ordered oldest-first (as
+    read_findings returns them), so the last write per key wins.
+    """
+    latest: dict[tuple[str, str], Finding] = {}
+    for f in findings:
+        latest[(f.rule, f.subject)] = f
+    return list(latest.values())

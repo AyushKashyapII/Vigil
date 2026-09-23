@@ -5,6 +5,23 @@ have to rediscover them later. Not in priority order. When something gets
 picked up, move it out of here into the actual work.
 
 ## Rule refinements
+- **`possible_missing_index` findings don't carry enough information for
+  an automated fix.** The finding names the table getting sequentially
+  scanned, but not which column the queries are actually filtering on --
+  `pg_stat_user_tables` only has table-level scan counts, nothing
+  column-level. `CREATE INDEX ON orders(???)` -- we don't know what goes
+  in the parentheses. This wasn't caught when the rule was built because
+  it was verified against `/orders-by-user`, and we already knew that
+  query filters on `user_id` from having written the demo app ourselves --
+  the test proved the *pattern* detection worked without ever proving the
+  *finding* carries enough data for something else to act on it blind.
+  Real fix needs either: collector correlating this against the actual
+  query text hitting that table (from `pg_stat_statements`, which it
+  already polls but doesn't persist raw, only rule matches) to extract the
+  filtered column, or a more direct mechanism (periodic `EXPLAIN` sampling
+  of slow queries against the table). Bigger than a one-line addition to
+  brain's v1 -- `possible_unused_index` fix suggestions (which only need
+  an index name, already have it) are unaffected and proceeding first.
 - **Stale planner statistics detection was never built, for the same
   reason bloat detection is disabled.** The idea: `pg_stat_user_tables.
   n_mod_since_analyze` (rows changed since the last `ANALYZE`) as a
