@@ -178,9 +178,20 @@ func EvaluateConnectionCount(current, max int) []Finding {
 // = $1" or "WHERE user_id = $1", capturing just the column name.
 var filterColumnRe = regexp.MustCompile(`(?i)WHERE\s+(?:\w+\.)?(\w+)\s*=\s*\$\d+`)
 
+// filterMatch is a query correlated to a table, with the column it
+// filters on. Carrying the query text itself (not just the column name)
+// matters: a future sandbox verifying a proposed index fix needs the
+// actual query to re-run before/after, not just the name of the column
+// involved.
+type filterMatch struct {
+	Column string
+	Query  string
+}
+
 // findFilterColumn searches statements (the same poll cycle's
 // pg_stat_statements deltas) for a query that references tableName and
-// has a simple equality WHERE filter, returning the filtered column.
+// has a simple equality WHERE filter, returning the filtered column and
+// the matched query itself.
 //
 // This is a text-pattern heuristic, not real SQL parsing -- same spirit
 // as DetectNestedSubquery's SELECT-counting. It only recognizes a single
@@ -188,17 +199,17 @@ var filterColumnRe = regexp.MustCompile(`(?i)WHERE\s+(?:\w+\.)?(\w+)\s*=\s*\$\d+
 // /orders-by-user and friends generate, but won't catch multi-condition
 // WHERE clauses, joins, or non-equality filters. Returns ok=false rather
 // than guessing when nothing confident is found.
-func findFilterColumn(tableName string, statements []metrics.StatementDelta) (string, bool) {
+func findFilterColumn(tableName string, statements []metrics.StatementDelta) (filterMatch, bool) {
 	lowerTable := strings.ToLower(tableName)
 	for _, s := range statements {
 		if !strings.Contains(strings.ToLower(s.Query), lowerTable) {
 			continue
 		}
 		if match := filterColumnRe.FindStringSubmatch(s.Query); match != nil {
-			return match[1], true
+			return filterMatch{Column: match[1], Query: s.Query}, true
 		}
 	}
-	return "", false
+	return filterMatch{}, false
 }
 
 // DetectMissingIndex flags a table getting sequentially scanned often and
@@ -215,12 +226,15 @@ func findFilterColumn(tableName string, statements []metrics.StatementDelta) (st
 func DetectMissingIndex(t metrics.TableDelta, statements []metrics.StatementDelta) (Finding, bool) {
 	if t.DeltaSeqScan >= MissingIndexMinSeqScans && t.IntervalMeanSeqTupRead >= MissingIndexMinRowsPerScan {
 		subject := fmt.Sprintf("table=%s.%s", t.SchemaName, t.TableName)
-		if column, ok := findFilterColumn(t.TableName, statements); ok {
-			subject = fmt.Sprintf("%s column=%s", subject, column)
+		var query string
+		if fm, ok := findFilterColumn(t.TableName, statements); ok {
+			subject = fmt.Sprintf("%s column=%s", subject, fm.Column)
+			query = fm.Query
 		}
 		return Finding{
 			Rule:    "possible_missing_index",
 			Subject: subject,
+			Query:   query,
 			Detail:  fmt.Sprintf("%d sequential scans this interval, avg %.0f rows read per scan", t.DeltaSeqScan, t.IntervalMeanSeqTupRead),
 		}, true
 	}
