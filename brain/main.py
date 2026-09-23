@@ -1,5 +1,7 @@
-from vigil_brain.fixes.index import suggest_unused_index_fix
+from vigil_brain.fixes.index import suggest_missing_index_fix, suggest_unused_index_fix
 from vigil_brain.parser.store import latest_by_subject, read_findings
+
+SUGGESTERS = [suggest_unused_index_fix, suggest_missing_index_fix]
 
 
 def main() -> None:
@@ -12,11 +14,12 @@ def main() -> None:
     print(f"{len(latest)} distinct (rule, subject) findings after dedup")
 
     for f in latest:
-        suggestion = suggest_unused_index_fix(f)
-        if suggestion is None:
-            continue
-        print(f"FIX SUGGESTION [{suggestion.rule}]: {suggestion.description}")
-        print(f"  {suggestion.sql}")
+        for suggest in SUGGESTERS:
+            suggestion = suggest(f)
+            if suggestion is None:
+                continue
+            print(f"FIX SUGGESTION [{suggestion.rule}]: {suggestion.description}")
+            print(f"  {suggestion.sql}")
 
 
 if __name__ == "__main__":
