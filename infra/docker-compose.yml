@@ -76,8 +76,16 @@ services:
     build: ../brain
     depends_on:
       - collector
+      - postgres
     environment:
       VIGIL_STORE_PATH: /data/vigil.db
+      # A direct connection with CREATEDB, for the sandbox -- a bigger
+      # capability than brain has had so far (it's only ever read
+      # collector's store). Reuses the same superuser credential as
+      # everything else in this dev stack for now; a real deployment
+      # would want this scoped to a dedicated sandbox role, separate from
+      # collector's ideally-read-only one. See ROADMAP.md.
+      SANDBOX_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/demo
     volumes:
       # Same volume collector writes vigil.db to, mounted read-only --
       # brain only ever reads the store, never writes to it.

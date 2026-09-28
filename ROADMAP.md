@@ -72,6 +72,14 @@ picked up, move it out of here into the actual work.
   "schema audit" mode, distinct from the rules that run every poll cycle.
 
 ## Infrastructure / hardening
+- **The sandbox's `SANDBOX_DATABASE_URL` reuses the same superuser
+  credential as everything else in this dev stack.** This is a real
+  capability increase for brain -- it went from "only reads collector's
+  SQLite store" to "has `CREATEDB` on the monitored database." Fine for a
+  local dev/demo credential; a real deployment should scope this to a
+  dedicated sandbox role, kept separate from collector's ideally-read-only
+  monitoring role (matches the least-privilege design principle already
+  in the root README).
 - **Unused-index tracking state is in-memory only for v1** (a map, like
   `Poller`/`TablePoller` already use) -- resets on every collector restart,
   losing days of accumulated "last changed" history. A persisted version
