@@ -76,11 +76,15 @@ func Open() (*SQLiteStore, error) {
 }
 
 // SaveFinding persists one finding, timestamped at the moment it's saved.
+// Stored as an explicit RFC3339Nano string, not a bare time.Time: passed
+// raw, the driver falls back to Go's debug String() format, which embeds a
+// monotonic clock reading that's meaningless across process restarts and
+// awkward to parse from anything other than Go.
 func (s *SQLiteStore) SaveFinding(ctx context.Context, f rules.Finding) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO findings (recorded_at, rule, subject, query, detail)
 		VALUES (?, ?, ?, ?, ?)
-	`, time.Now(), f.Rule, f.Subject, f.Query, f.Detail)
+	`, time.Now().UTC().Format(time.RFC3339Nano), f.Rule, f.Subject, f.Query, f.Detail)
 	if err != nil {
 		return fmt.Errorf("saving finding: %w", err)
 	}
