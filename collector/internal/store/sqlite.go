@@ -48,6 +48,15 @@ func Open() (*SQLiteStore, error) {
 		return nil, fmt.Errorf("pinging sqlite store: %w", err)
 	}
 
+	// WAL mode decouples our writes from concurrent readers (brain, or
+	// anything else reading the store): without it, SQLite's default
+	// rollback-journal mode blocks readers for the duration of every
+	// write, which surfaced as real "database is locked" errors.
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL;`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enabling WAL mode: %w", err)
+	}
+
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS findings (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
