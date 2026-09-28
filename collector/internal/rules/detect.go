@@ -174,9 +174,11 @@ func EvaluateConnectionCount(current, max int) []Finding {
 	return findings
 }
 
-// filterColumnRe matches a simple equality filter like "WHERE orders.user_id
-// = $1" or "WHERE user_id = $1", capturing just the column name.
-var filterColumnRe = regexp.MustCompile(`(?i)WHERE\s+(?:\w+\.)?(\w+)\s*=\s*\$\d+`)
+// filterColumnRe matches a table-qualified equality filter like "WHERE
+// orders.user_id = $1", capturing the table qualifier and column
+// separately. The qualifier is required (not optional) -- see
+// findFilterColumn for why.
+var filterColumnRe = regexp.MustCompile(`(?i)WHERE\s+(\w+)\.(\w+)\s*=\s*\$\d+`)
 
 // filterMatch is a query correlated to a table, with the column it
 // filters on. Carrying the query text itself (not just the column name)
@@ -189,25 +191,36 @@ type filterMatch struct {
 }
 
 // findFilterColumn searches statements (the same poll cycle's
-// pg_stat_statements deltas) for a query that references tableName and
-// has a simple equality WHERE filter, returning the filtered column and
-// the matched query itself.
+// pg_stat_statements deltas) for a query with a WHERE clause filtering on
+// tableName's own column, returning the filtered column and the matched
+// query itself.
 //
 // This is a text-pattern heuristic, not real SQL parsing -- same spirit
-// as DetectNestedSubquery's SELECT-counting. It only recognizes a single
-// `column = $N` equality filter, which is exactly the shape
-// /orders-by-user and friends generate, but won't catch multi-condition
-// WHERE clauses, joins, or non-equality filters. Returns ok=false rather
-// than guessing when nothing confident is found.
+// as DetectNestedSubquery's SELECT-counting. It only recognizes a single,
+// table-qualified `table.column = $N` equality filter, which is exactly
+// the shape /orders-by-user and friends generate, but won't catch
+// multi-condition WHERE clauses or non-equality filters. Returns
+// ok=false rather than guessing when nothing confident is found.
+//
+// The qualifier match is required, not just "does the query mention this
+// table somewhere": a JOIN query can mention tableName (e.g. in its
+// SELECT list or FROM clause) while its WHERE clause actually filters on
+// a *different* joined table's column. An earlier version only checked
+// for the table name anywhere in the query text and matched the wrong
+// table's column as a result (e.g. correlating order_items -- which has
+// no user_id column at all -- with a WHERE orders.user_id = $N clause
+// from a join). Found by the sandbox failing to even construct a valid
+// query, not anticipated when this was first written.
 func findFilterColumn(tableName string, statements []metrics.StatementDelta) (filterMatch, bool) {
-	lowerTable := strings.ToLower(tableName)
 	for _, s := range statements {
-		if !strings.Contains(strings.ToLower(s.Query), lowerTable) {
+		match := filterColumnRe.FindStringSubmatch(s.Query)
+		if match == nil {
 			continue
 		}
-		if match := filterColumnRe.FindStringSubmatch(s.Query); match != nil {
-			return filterMatch{Column: match[1], Query: s.Query}, true
+		if !strings.EqualFold(match[1], tableName) {
+			continue
 		}
+		return filterMatch{Column: match[2], Query: s.Query}, true
 	}
 	return filterMatch{}, false
 }

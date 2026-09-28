@@ -72,6 +72,29 @@ picked up, move it out of here into the actual work.
   "schema audit" mode, distinct from the rules that run every poll cycle.
 
 ## Infrastructure / hardening
+- **Findings have no resolution/expiry concept -- the store only ever
+  grows, and `latest_by_subject`'s "last recorded wins" dedup means a
+  finding can outlive the condition that caused it.** Two distinct ways
+  this bites: (1) detection logic changes (e.g. a correlation-bug fix)
+  leave old findings recorded under the old, now-wrong logic sitting in
+  the store forever, since nothing ever recorded a fresher finding for
+  that exact `(rule, subject)` key to supersede them; (2) even with
+  perfect logic, a real-world condition can resolve on its own (someone
+  manually adds the missing index, an unused index starts getting
+  scanned again) and nothing marks the old finding stale -- brain has no
+  way to know the world moved on. Discovered when a stale
+  `possible_missing_index` finding recorded before a collector bugfix
+  crashed the sandbox verification pipeline on a column that no longer
+  applied. Needs either an expiry/TTL (ignore findings older than N
+  cycles without reconfirmation) or the collector actively re-affirming
+  or retracting findings each poll, not just adding new ones. Not fixed
+  now -- one-off truncation of the dev store is enough to unblock local
+  testing, but this will recur in a real deployment.
+- **`brain/main.py`'s per-finding loop has no error isolation -- one bad
+  finding (unparseable subject, invalid SQL, a benchmark query that no
+  longer matches the schema) throws and kills the entire pipeline run**
+  instead of skipping that finding and continuing with the rest. Fixed
+  by wrapping the suggest/verify step in try/except per finding.
 - **The sandbox's `SANDBOX_DATABASE_URL` reuses the same superuser
   credential as everything else in this dev stack.** This is a real
   capability increase for brain -- it went from "only reads collector's

@@ -38,13 +38,13 @@ def _conn_info() -> ConnInfo:
     )
 
 
-def _env(conn: ConnInfo) -> dict:
+def env_for(conn: ConnInfo) -> dict:
     env = os.environ.copy()
     env["PGPASSWORD"] = conn.password
     return env
 
 
-def _pg_args(conn: ConnInfo) -> list[str]:
+def pg_args(conn: ConnInfo) -> list[str]:
     return ["-h", conn.host, "-p", str(conn.port), "-U", conn.user]
 
 
@@ -72,21 +72,21 @@ class Sandbox:
 
     def _create(self) -> None:
         subprocess.run(
-            ["createdb", *_pg_args(self.conn), self.name],
-            env=_env(self.conn),
+            ["createdb", *pg_args(self.conn), self.name],
+            env=env_for(self.conn),
             check=True,
         )
 
     def _clone(self) -> None:
         dump = subprocess.run(
-            ["pg_dump", *_pg_args(self.conn), self.conn.dbname],
-            env=_env(self.conn),
+            ["pg_dump", *pg_args(self.conn), self.conn.dbname],
+            env=env_for(self.conn),
             check=True,
             capture_output=True,
         )
         subprocess.run(
-            ["psql", *_pg_args(self.conn), "-d", self.name],
-            env=_env(self.conn),
+            ["psql", *pg_args(self.conn), "-d", self.name],
+            env=env_for(self.conn),
             input=dump.stdout,
             check=True,
             capture_output=True,
@@ -96,8 +96,8 @@ class Sandbox:
         # Best-effort: don't raise during teardown, a failed drop
         # shouldn't mask whatever happened inside the `with` block.
         subprocess.run(
-            ["dropdb", *_pg_args(self.conn), "--if-exists", self.name],
-            env=_env(self.conn),
+            ["dropdb", *pg_args(self.conn), "--if-exists", self.name],
+            env=env_for(self.conn),
             check=False,
         )
 
