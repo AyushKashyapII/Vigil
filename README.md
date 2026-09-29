@@ -1,68 +1,110 @@
 # Vigil
 
-**An autonomous PostgreSQL operations agent that proves its optimizations before suggesting them.**
+**An autonomous PostgreSQL optimization agent that proves its fixes work before suggesting them — not "the AI thinks this might help," an actual before/after benchmark run in a disposable clone of your database.**
 
-Vigil watches your database's live statistics, identifies slow queries, inefficient indexes, connection leaks, and deadlocks, then — instead of just alerting you — spins up an isolated sandbox to mathematically verify that its proposed fix actually helps before opening a GitHub PR or paging you on Slack.
-
-No guessing. No "the AI thinks this might work." Every suggestion is benchmarked against a disposable clone of your schema first, and discarded quietly if it doesn't hold up.
+Vigil watches a live Postgres instance, detects real problems (missing indexes, wasted indexes, N+1 query patterns, correlated subqueries, unbounded result sets, stuck transactions, connection exhaustion), and for anything it can *fix* rather than just *flag*, it clones the database into a throwaway sandbox, applies the fix, and benchmarks before vs. after. If the fix doesn't measurably help — or, for LLM-proposed rewrites, doesn't even return the same results — it's silently discarded. Nothing gets proposed on a guess.
 
 ---
 
-## What it does
+## What's actually built
 
-Vigil is scoped to one problem: **optimizing database operations, safely and provably.**
+Every row below reflects real, working code — not a roadmap. All seven detection rules run end-to-end today; the columns show what happens *after* detection.
 
-### Query efficiency
-- Detects N+1 query patterns from ORMs (Prisma, SQLAlchemy, Django ORM, etc.)
-- Flags unnecessarily nested subqueries that can be rewritten as joins
-- Catches queries missing `LIMIT` or proper filtering that cause full-table scans
-- Flags query plan regressions caused by stale planner statistics
+| Detection rule | Fix generation | Verification | Output |
+|---|---|---|---|
+| `possible_missing_index` | Deterministic (`CREATE INDEX`) | ✅ Sandbox-benchmarked (read latency) | PR draft (dry-run) |
+| `possible_unused_index` | Deterministic (`DROP INDEX`) | ✅ Sandbox-benchmarked (write latency) | PR draft (dry-run) |
+| `nested_subquery` | LLM-proposed rewrite (Groq) | ✅ Sandbox correctness-checked *and* benchmarked | Console (PR generation not built yet) |
+| `possible_n_plus_one` | Deterministic (batch via `= ANY(...)`) | ✅ Sandbox-benchmarked (N sequential calls vs. 1 batched call) | Console (PR generation not built yet) |
+| `possible_unbounded_query` | — (result-set size is an API contract decision, not a bug) | — | Live alert (dry-run Slack) |
+| `idle_in_transaction` | — (operational, nothing to benchmark) | — | Live alert (dry-run Slack) |
+| `approaching_max_connections` | — (operational, nothing to benchmark) | — | Live alert (dry-run Slack) |
 
-### Index management
-- Detects sequential scans and proposes the correct index type (B-Tree, Hash, GiST)
-- Flags redundant or duplicate indexes
-- Finds indexes unused for 30+ days and proposes dropping them
-- Supports pgvector index health (HNSW / IVFFlat) where applicable
-
-### Connections
-- Detects connection leaks (`idle in transaction`)
-- Detects deadlocks between competing transactions
-- Flags approaching `max_connections` limits
-- Recommends PgBouncer pool mode based on observed connection churn
-
-### Storage & maintenance
-- Detects table and index bloat from dead tuples (MVCC)
-- Schedules `VACUUM ANALYZE` during low-traffic windows when bloat crosses a threshold
+"Dry-run" means the migration file, PR body, and Slack message are all generated for real and written/printed — nothing is actually pushed to GitHub or posted to Slack yet. That's a deliberate, explicit line (see [What's next](#whats-next)), not an oversight.
 
 ---
 
-## How it works
+## Results — real numbers, not estimates
 
-```
-Postgres (pg_stat_statements, pg_stat_activity, pg_stat_user_indexes)
-        │
-        ▼
-Go collector — polls metrics, runs rule-based detection
-        │
-        ▼
-Python brain — parses query AST, asks an LLM to propose a fix
-        │
-        ▼
-Docker sandbox — clones schema, seeds synthetic data,
-                  benchmarks the fix before/after
-        │
-   ┌────┴────┐
-   ▼         ▼
-verified   discarded
-   │        (logged, no action taken)
-   ▼
-Go action executor
-   │
-   ├── GitHub PR (query rewrite / index change, with benchmark numbers)
-   └── Slack alert (live issues: leaks, deadlocks — human-gated actions only)
+Every number below came from an actual sandboxed benchmark run against real data during development, not a synthetic example.
+
+| Finding | Before | After | Change | How it was proven |
+|---|---|---|---|---|
+| Missing index, `orders.user_id` | 6.50ms | 0.28ms | **96% faster** | `CREATE INDEX`, timed before/after in a disposable clone |
+| Missing index, `order_items.product_id` | ~20ms | ~1.2ms | **93% faster** | same |
+| Unused index `idx_users_last_login` | 47.17ms | 41.91ms | 11% faster — **correctly *not* proposed** | write-cost (`UPDATE`) benchmark; below the 20%-improvement bar, so nothing shipped |
+| N+1: 196 sequential per-row lookups → 1 batched call | 6.15ms total | 0.11ms | **98% faster** | real query, batched via `= ANY(...)`, sandbox-timed |
+| Correlated subquery → `JOIN` + `GROUP BY` (LLM-proposed) | 822.16ms | 46.28ms | **94% faster** | LLM rewrite via Groq, *rejected outright unless* results matched the original exactly, timed only after passing that check |
+
+The unused-index row matters as much as the fast ones: it's the system correctly saying *no*. A tool that only ever reports wins isn't proving anything.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph PG["PostgreSQL"]
+        direction TB
+        S1["pg_stat_statements"]
+        S2["pg_stat_activity"]
+        S3["pg_stat_user_tables"]
+        S4["pg_stat_user_indexes"]
+    end
+
+    PG -->|polls every 5s| C["Go Collector\n7 detection rules"]
+    C -->|append-only, WAL mode| DB[("SQLite store")]
+    DB --> B["Python Brain"]
+
+    B --> D1{"Fix is\nmechanical?"}
+    D1 -->|"yes: index / batch"| F1["Deterministic\nfix template"]
+    D1 -->|"no: needs reasoning"| F2["LLM rewrite\n(Groq)"]
+    B --> D2{"Operational,\nnot provable?"}
+    D2 -->|yes| F3["Live alert"]
+
+    F1 --> SB["Disposable sandbox\n(pg_dump clone)"]
+    F2 --> SB
+    SB -->|"benchmark + correctness check"| V{"Proven faster\nAND correct?"}
+    V -->|yes| PR["PR draft (dry-run)"]
+    V -->|no| X["Discarded, logged"]
+    F3 --> SL["Slack message (dry-run)"]
 ```
 
-Live issues (connection leaks, deadlocks) bypass the sandbox entirely and go straight to an alert, since there's nothing to benchmark in an active emergency — the agent proposes the fix (e.g. killing a PID) but never executes it without explicit human approval.
+### The sandbox: "prove it, don't trust it" in detail
+
+```mermaid
+sequenceDiagram
+    participant Finding
+    participant Brain
+    participant Sandbox as Disposable Sandbox
+
+    Finding->>Brain: e.g. possible_missing_index
+    Brain->>Sandbox: pg_dump clone of live schema + data
+    Brain->>Sandbox: benchmark "before"
+    Brain->>Sandbox: apply proposed fix
+    Brain->>Sandbox: benchmark "after"
+    opt LLM-proposed rewrite only
+        Brain->>Sandbox: diff results (EXCEPT, both directions)
+        Sandbox-->>Brain: reject immediately if rows don't match
+    end
+    Sandbox-->>Brain: before/after timing
+    Brain-->>Brain: helped = after <= before * 0.8
+    Sandbox--xSandbox: dropped, regardless of verdict
+```
+
+Every sandbox is a full `pg_dump`/`psql` clone of the live database, created fresh and dropped immediately after — nothing persists between checks, and nothing is ever benchmarked against synthetic data. The 20%-improvement bar (not just "any improvement") exists specifically to filter out noise: the unused-index result above (11% faster) shows it working as intended.
+
+---
+
+## A bug this project found in itself
+
+Midway through building the third detection rule, the system started reporting the same two confusing things every run: a phantom "missing index" on `users.id` (already a primary key — impossible) and a 117-way explosion of false `nested_subquery` findings.
+
+The root cause turned out to be one query with a missing scope: `pg_stat_statements` is **cluster-wide**, not per-database, and the collector's polling query had no `WHERE dbid = ...` filter. Every disposable sandbox this same system creates and drops runs its own benchmark queries — and `pg_stat_statements` doesn't clean those up when the database is dropped. A direct check confirmed it: **4,872 total tracked statements, only 162 belonging to live databases** — the other 4,710 (97%) were orphaned rows from already-deleted sandbox clones, silently getting correlated against the real database's stats.
+
+One `WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())` fixed both symptoms at once, because they'd always been the same bug. Five other real bugs were found and root-caused the same way during development — a Cloudflare 403 that had nothing to do with the API key, SQLite's default journal mode silently blocking concurrent readers, a regex that attributed a WHERE-clause filter to the wrong table in a JOIN — kept as personal notes, not published in this repo.
+
+The correctness check in the sandbox caught its own class of bug too: when pointed at real, gnarly Postgres internals (via `pg_dump`'s own catalog queries), the LLM produced plausible-*looking* rewrites for 8 different queries — 6 of them were subtly wrong (different result sets) and were rejected automatically, before their timing was ever considered.
 
 ---
 
@@ -70,61 +112,74 @@ Live issues (connection leaks, deadlocks) bypass the sandbox entirely and go str
 
 ```
 vigil/
-├── collector/       # Go — metrics polling, rule engine, GitHub/Slack actions
-├── brain/           # Python — LLM orchestration, AST parsing, sandbox benchmarking
-├── demo-app/         # FastAPI + SQLAlchemy app with deliberately bad queries, used to test Vigil
-├── infra/           # docker-compose setup for Postgres + demo-app + Vigil services
-└── docs/            # architecture notes and design decisions
+├── collector/              # Go -- polls Postgres stats, runs the 7 detection rules
+│   ├── internal/metrics/   #   pg_stat_statements/activity/tables/indexes pollers
+│   ├── internal/rules/     #   detection logic (detect.go)
+│   └── internal/store/     #   SQLite persistence (WAL mode)
+├── brain/                  # Python -- turns findings into proven fixes or alerts
+│   └── vigil_brain/
+│       ├── fixes/          #   deterministic fix templates (index, n+1 batching)
+│       ├── llm/            #   Groq client, used only for nested_subquery
+│       ├── sandbox/        #   disposable clone + benchmark + correctness check
+│       ├── actions/        #   PR draft / Slack message generation (dry-run)
+│       └── alerts.py       #   live operational alerts (no sandbox needed)
+├── demo-app/                # FastAPI + SQLAlchemy "victim" app -- deliberately bad
+│                             #   query patterns, used to generate real findings
+├── infra/                  # docker-compose: Postgres, demo-app, PgBouncer, collector, brain
+├── ROADMAP.md               # everything deliberately deferred, and why
+└── learning-log.md          # real bugs hit during development, root-caused
 ```
-
----
-
-## Prerequisites
-
-- Docker & Docker Compose
-- Go 1.22+
-- Python 3.11+
-- A GitHub personal access token (for PR creation)
-- A Slack webhook URL (for alerts)
 
 ---
 
 ## Getting started
 
 ```bash
-# clone the repo
-git clone https://github.com/<your-username>/vigil.git
-cd vigil
+git clone <this-repo>
+cd vigil/infra
 
-# bring up Postgres (with pg_stat_statements enabled) and the demo app
-cd infra
+# optional: enables the nested_subquery LLM rewrite path. Everything else
+# (index fixes, N+1 batching, all alerts) works without it.
+echo "GROQ_API_KEY=<your key>" > .env
+
 docker compose up -d
 
-# seed the demo app with test data
 cd ../demo-app
+alembic upgrade head    # schema + deliberate flaws (must run before seeding)
 python seed.py
+python load.py          # separate terminal: generates continuous query traffic
 
-# generate some bad query traffic so pg_stat_statements has data to work with
-python load.py
+# watch the collector detect things in real time
+docker compose logs -f collector
+
+# run brain against whatever's been found so far
+cd ../infra
+docker compose run --rm brain
 ```
-
-Verify Postgres is collecting stats:
-
-```bash
-docker exec -it vigil-postgres psql -U postgres -d dev_db \
-  -c "SELECT query, calls, mean_exec_time FROM pg_stat_statements ORDER BY mean_exec_time DESC LIMIT 5;"
-```
-
-Once this returns rows, the collector and brain services can be built against real data.
 
 ---
 
 ## Design principles
 
-- **Prove it, don't trust it.** Every optimization suggestion is benchmarked in an isolated sandbox before it's ever surfaced to a human.
-- **Least privilege by default.** The agent connects with a read-only monitoring role (`pg_monitor`) for detection; any destructive or write action requires a separately scoped, explicitly approved credential.
-- **Human-gated destructive actions.** The agent never runs `DROP INDEX`, kills a PID, or executes a migration on its own — it proposes, and a human approves.
-- **Read-only fixes can run autonomously.** Non-destructive actions like `ANALYZE` (which can only improve planner statistics, never lose data) are safe to automate without a human in the loop.
+- **Prove it, don't trust it.** Every fix that isn't provably correct-by-construction (an index change can never alter query results) gets benchmarked, and LLM-proposed rewrites additionally get their results diffed against the original before timing counts for anything.
+- **Deterministic where possible, LLM only where necessary.** 5 of 7 rules need no LLM at all — index changes and N+1 batching are mechanical transforms with correctness guaranteed by the query shape itself. The LLM is reserved for the one case (subquery→JOIN rewriting) that genuinely requires understanding intent.
+- **Operational issues bypass the sandbox.** A stuck transaction or a near-full connection pool needs a human *now* — there's nothing to benchmark in an emergency, so these go straight to an alert instead of through fix-verification.
+- **Fail closed, not loud.** A malformed finding, an unreachable LLM, an unrecognized query shape — all of these skip that one item and move on, rather than crashing the whole pipeline or guessing.
+- **Least privilege — designed for, not fully implemented yet.** The sandbox currently reuses the same superuser credential as the rest of the dev stack; a real deployment should scope it to a dedicated, narrower role. Tracked honestly in [`ROADMAP.md`](ROADMAP.md), not glossed over.
+
+---
+
+## What's next
+
+The short version — full detail with reasoning for every item is in [`ROADMAP.md`](ROADMAP.md):
+
+- **Go live.** Wire the dry-run PR/Slack output to real `gh pr create` calls and a real Slack webhook, for the rule(s) already fully proven.
+- **PR generation for query rewrites.** `nested_subquery` and `possible_n_plus_one` fixes are application-code changes (editing a SQL string in source), not schema migrations — needs a source-diff generator, not the existing Alembic-migration one.
+- **Deadlock detection.** Lives in Postgres's log file, not any stats view — a structurally different mechanism than everything built so far.
+- **PgBouncer pool-mode recommendation.** Nothing in the current stack actually routes traffic through PgBouncer yet, so there's nothing real to reason about pooling from.
+- **Table/index bloat detection.** Built, but disabled — every test so far had autovacuum clean up dead tuples before the threshold was honestly crossed. Needs a bigger, busier table to test against.
+- **pgvector/HNSW index health.** The demo app already seeds the exact bug (an HNSW index built on an empty table); nothing detects it yet.
+- **Findings staleness/expiry.** The store only ever grows; a finding whose condition has since resolved doesn't currently get marked as such.
 
 ---
 
@@ -156,7 +211,7 @@ Schema-level flaws (applied by the `0002_deliberate_flaws` migration, not the en
 - An index on `users.last_login_at` that nothing ever queries.
 - An HNSW index on `product_embeddings` built *before* any embeddings exist, reproducing pgvector's empty-table garbage-centroids bug.
 
-Schema is managed by [Alembic](https://alembic.sqlalchemy.org/) (`demo-app/alembic/`), not an ad-hoc script — `0001_initial_schema` creates the real tables (matching `app/models.py` exactly), `0002_deliberate_flaws` layers the intentional flaws on top, mirroring the same split the old setup script used to have.
+Schema is managed by [Alembic](https://alembic.sqlalchemy.org/) (`demo-app/alembic/`), not an ad-hoc script — `0001_initial_schema` creates the real tables (matching `app/models.py` exactly), `0002_deliberate_flaws` layers the intentional flaws on top.
 
 ### How to run
 
