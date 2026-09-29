@@ -86,10 +86,19 @@ services:
       # would want this scoped to a dedicated sandbox role, separate from
       # collector's ideally-read-only one. See ROADMAP.md.
       SANDBOX_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/demo
+      ALEMBIC_VERSIONS_DIR: /alembic-versions
+      PROPOSALS_DIR: /proposals
     volumes:
       # Same volume collector writes vigil.db to, mounted read-only --
       # brain only ever reads the store, never writes to it.
       - collector_data:/data:ro
+      # Read-only: brain needs to know the current Alembic head to chain
+      # a generated migration onto, never to write here directly.
+      - ../demo-app/alembic/versions:/alembic-versions:ro
+      # Dry-run PR output (migration file + PR body) -- see ROADMAP.md,
+      # actions/pr.py. A real bind mount, not a named volume, so it's
+      # readable straight from the host without docker cp.
+      - ../proposals:/proposals
     deploy:
       resources:
         limits:

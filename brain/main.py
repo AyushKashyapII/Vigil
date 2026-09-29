@@ -1,3 +1,5 @@
+from vigil_brain.actions.pr import build_pr, write_draft
+from vigil_brain.actions.slack import send_alert
 from vigil_brain.alerts import ALERTERS, is_fresh
 from vigil_brain.fixes.index import suggest_missing_index_fix, suggest_unused_index_fix
 from vigil_brain.parser.store import latest_by_subject, read_findings
@@ -23,6 +25,7 @@ def main() -> None:
             if alert is None:
                 continue
             print(f"ALERT [{alert.rule}]: {alert.message}")
+            send_alert(alert)
 
     for f in latest:
         for suggest in SUGGESTERS:
@@ -42,6 +45,11 @@ def main() -> None:
                     f"({result.improvement_pct:.0f}% {'faster' if result.improvement_pct >= 0 else 'slower'}), "
                     f"helped={result.helped}"
                 )
+
+                draft = build_pr(f, suggestion, result)
+                if draft is not None:
+                    out_dir = write_draft(draft)
+                    print(f"  PR DRAFT written to {out_dir} (dry run, not opened)")
             except Exception as e:
                 print(f"  SKIPPED finding {f.id} ({f.rule} {f.subject}): {e}")
 
