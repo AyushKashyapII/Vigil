@@ -6,10 +6,10 @@ VerificationResult where helped=True, matching the project's "prove it,
 don't trust it" principle: nothing gets proposed without a benchmark
 behind it.
 
-Only handles CREATE INDEX fixes right now -- the only fix type that
-actually reaches a VerificationResult today (possible_unused_index isn't
-sandbox-verified yet, see ROADMAP.md), so a DROP INDEX migration/downgrade
-pair isn't reconstructable from the fix alone and isn't attempted.
+Handles both CREATE INDEX and DROP INDEX fixes. A DROP's downgrade can't
+be fully automated -- the original index definition isn't reconstructable
+from the DROP statement alone -- so its downgrade() is a manual note
+instead of real SQL, rather than guessing at a definition.
 """
 
 import hashlib
@@ -28,6 +28,7 @@ PROPOSALS_DIR = os.environ.get("PROPOSALS_DIR", "/proposals")
 _REVISION_RE = re.compile(r'^revision:\s*str\s*=\s*"([^"]+)"', re.MULTILINE)
 _DOWN_REVISION_RE = re.compile(r'^down_revision.*=\s*"([^"]+)"', re.MULTILINE)
 _CREATE_INDEX_RE = re.compile(r"CREATE INDEX (\S+) ON (\S+)", re.IGNORECASE)
+_DROP_INDEX_RE = re.compile(r"DROP INDEX(?: IF EXISTS)?\s+(?:[\w]+\.)?([\w]+)", re.IGNORECASE)
 
 
 @dataclass
@@ -63,14 +64,47 @@ def _find_head_revision() -> str | None:
     return heads.pop()
 
 
+def _migration_body(fix: FixSuggestion) -> tuple[str, str, str] | None:
+    """Returns (index_name, upgrade_sql, downgrade_body) for a recognized
+    fix shape, or None for a shape this doesn't know how to turn into a
+    migration. downgrade_body is the literal Python source for the
+    downgrade() function's body (indented, ready to drop into the
+    template) -- a real op.execute(...) call for a CREATE INDEX fix,
+    since the reverse (dropping it) is fully known; a manual note for a
+    DROP INDEX fix, since the original index definition can't be
+    reconstructed from the DROP statement alone.
+    """
+    create_match = _CREATE_INDEX_RE.search(fix.sql)
+    if create_match:
+        index_name, _table = create_match.groups()
+        return (
+            index_name,
+            fix.sql.rstrip(";"),
+            f'    op.execute("DROP INDEX IF EXISTS {index_name}")',
+        )
+
+    drop_match = _DROP_INDEX_RE.search(fix.sql)
+    if drop_match:
+        index_name = drop_match.group(1)
+        return (
+            index_name,
+            fix.sql.rstrip(";"),
+            f"    # {index_name}'s original definition can't be reconstructed from a DROP.\n"
+            f"    # Recreate it manually from schema history if reverting this migration.\n"
+            f"    pass",
+        )
+
+    return None
+
+
 def build_pr(finding: Finding, fix: FixSuggestion, result: VerificationResult) -> PRDraft | None:
     if not result.helped:
         return None
 
-    match = _CREATE_INDEX_RE.search(fix.sql)
-    if not match:
+    parsed = _migration_body(fix)
+    if parsed is None:
         return None
-    index_name, _table = match.groups()
+    index_name, upgrade_sql, downgrade_body = parsed
 
     head = _find_head_revision()
     if head is None:
@@ -101,11 +135,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("{fix.sql.rstrip(";")}")
+    op.execute("{upgrade_sql}")
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS {index_name}")
+{downgrade_body}
 '''
 
     body = f"""## {fix.description}

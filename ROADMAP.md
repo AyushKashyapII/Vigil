@@ -61,6 +61,16 @@ picked up, move it out of here into the actual work.
   delta with `delta_calls=0` but `delta_total_exec_time=-0.01ms` and
   `delta_rows=-1`. Cosmetic so far, but the guard should probably check
   every counter field, not just the primary one.
+- **The unused-index write benchmark has two known scope limits, both
+  deliberate for v1, not oversights.** (1) It only benchmarks the first
+  column of a multi-column index (parsed from `pg_indexes.indexdef`) --
+  fine for the single-column case that's the only one actually built
+  today, but a multi-column index's real write cost isn't fully captured.
+  (2) The row sample (`ctid IN (SELECT ctid ... LIMIT N)`) is physical
+  order, not random -- consistent enough for a fair before/after
+  comparison within one sandbox run, but not a statistically
+  representative sample of the table. Revisit if/when multi-column
+  indexes or a more rigorous sampling need shows up.
 - **Duplicate index detection -- deliberately deprioritized, not just
   deferred.** Every rule built so far detects something only visible by
   observing behavior *over time* (call rates, idle duration, scan
