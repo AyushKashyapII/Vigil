@@ -30,16 +30,6 @@ Every number below came from an actual sandboxed benchmark run against real data
 
 ![Results from real benchmark runs — table of before/after timings for each fix, all sandbox-proven](public/Vigil_stats.png)
 
-Same data, as a table (for search/copy-paste):
-
-| Finding | Before | After | Change | How it was proven |
-|---|---|---|---|---|
-| Missing index, `orders.user_id` | 6.50ms | 0.28ms | **96% faster** | `CREATE INDEX`, timed before/after in a disposable clone |
-| Missing index, `order_items.product_id` | ~20ms | ~1.2ms | **93% faster** | same |
-| Unused index `idx_users_last_login` | 47.17ms | 41.91ms | 11% faster — **correctly *not* proposed** | write-cost (`UPDATE`) benchmark; below the 20%-improvement bar, so nothing shipped |
-| N+1: 196 sequential per-row lookups → 1 batched call | 6.15ms total | 0.11ms | **98% faster** | real query, batched via `= ANY(...)`, sandbox-timed |
-| Correlated subquery → `JOIN` + `GROUP BY` (LLM-proposed) | 822.16ms | 46.28ms | **94% faster** | LLM rewrite via Groq, *rejected outright unless* results matched the original exactly, timed only after passing that check |
-
 The unused-index row matters as much as the fast ones: it's the system correctly saying *no*. A tool that only ever reports wins isn't proving anything.
 
 ---
