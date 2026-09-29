@@ -99,6 +99,16 @@ picked up, move it out of here into the actual work.
   semantics) or routing non-matching shapes through the LLM path like
   nested_subquery -- not done yet.
 
+- **`possible_unbounded_query` still has a smaller residual false-positive
+  source after the SELECT-prefix guard fix:** `pg_dump`'s own schema
+  introspection queries (e.g. against `pg_catalog.pg_description`,
+  `pg_proc`) *are* real SELECTs, so the guard that eliminated its `COPY`
+  false positives doesn't touch these. Deliberately not filtered by
+  schema name (`pg_catalog`/`information_schema`) for now -- picked the
+  narrower, more consistent fix (matching the exact precedent set by
+  `possible_n_plus_one`'s BEGIN/COMMIT guard) over a broader one. Revisit
+  if this noise turns out to matter in practice.
+
 ## Infrastructure / hardening
 - **Findings have no resolution/expiry concept -- the store only ever
   grows, and `latest_by_subject`'s "last recorded wins" dedup means a

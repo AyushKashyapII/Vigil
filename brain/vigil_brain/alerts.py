@@ -1,13 +1,20 @@
 """Live-condition alerts: findings where the right action is telling a
-human right now, not proposing and sandbox-verifying a fix. No sandbox
-needed -- these are operational states (a stuck transaction, a connection
-pool nearing capacity), not schema changes that need proving safe first.
+human right now, not proposing and sandbox-verifying a fix.
 
-Unlike fix suggestions, these need a recency check: `latest_by_subject`
+idle_in_transaction and approaching_max_connections need no sandbox
+because there's nothing to benchmark in an operational emergency.
+possible_unbounded_query is here for a different reason: its "fix" (add a
+LIMIT/pagination) necessarily changes the result set on purpose -- that's
+not a correctness bug the way an LLM's wrong rewrite would be, and no
+sandbox can tell us whether whatever calls this endpoint actually needs
+every row or not. That's an API-contract judgment call, not something to
+prove and auto-propose -- so it stays an alert, not a fix suggestion.
+
+Unlike fix suggestions, alerts need a recency check: `latest_by_subject`
 only guarantees "most recently recorded", not "still true". The collector
-re-fires idle_in_transaction/approaching_max_connections on every poll
-cycle the condition holds, so a genuinely ongoing issue always has a
-fresh row; a resolved one just stops getting new rows and ages out.
+re-evaluates all three rules every poll cycle the underlying condition
+holds, so a genuinely ongoing issue always has a fresh row; a resolved
+one just stops getting new rows and ages out.
 """
 
 from dataclasses import dataclass
@@ -61,4 +68,14 @@ def check_approaching_max_connections(finding: Finding) -> Alert | None:
     )
 
 
-ALERTERS = [check_idle_in_transaction, check_approaching_max_connections]
+def check_unbounded_query(finding: Finding) -> Alert | None:
+    if finding.rule != "possible_unbounded_query":
+        return None
+    return Alert(
+        finding_id=finding.id,
+        rule=finding.rule,
+        message=f"{finding.detail} -- query: {finding.query!r}",
+    )
+
+
+ALERTERS = [check_idle_in_transaction, check_approaching_max_connections, check_unbounded_query]

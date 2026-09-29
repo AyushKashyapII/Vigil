@@ -110,7 +110,16 @@ func DetectPossibleNPlusOne(d metrics.StatementDelta) (Finding, bool) {
 // call, on average -- the signature of a missing LIMIT/pagination. Unlike
 // the N+1 rule, call count doesn't matter here: even a single call pulling
 // thousands of rows is already expensive in disk I/O, network, and memory.
+//
+// Only considers statements that look like a SELECT, same guard and same
+// reasoning as DetectPossibleNPlusOne: without it, a `COPY table TO
+// stdout` (issued by the sandbox's own pg_dump clone step, not real
+// application traffic) trivially satisfies "returned a lot of rows in
+// one call" and gets misdetected as a real finding.
 func DetectUnboundedQuery(d metrics.StatementDelta) (Finding, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(strings.ToUpper(d.Query)), "SELECT") {
+		return Finding{}, false
+	}
 	if d.IntervalMeanRows >= UnboundedMinRowsPerCall {
 		return Finding{
 			Rule:    "possible_unbounded_query",
