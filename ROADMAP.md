@@ -89,6 +89,16 @@ picked up, move it out of here into the actual work.
   migration generator -- a genuinely different action, not an extension
   of the existing one. Stays console-only for now.
 
+- **`possible_n_plus_one`'s deterministic fix only covers the exact
+  shape `SELECT ... FROM table WHERE table.column = $1`** -- a single
+  table, a single equality condition, nothing else. Real N+1s with a
+  join in the per-row query, a compound WHERE clause, or a composite key
+  fall through unhandled rather than being guessed at. Widening this
+  would mean either loosening the shape check (risking an incorrect
+  batching that isn't actually equivalent to the original per-row
+  semantics) or routing non-matching shapes through the LLM path like
+  nested_subquery -- not done yet.
+
 ## Infrastructure / hardening
 - **Findings have no resolution/expiry concept -- the store only ever
   grows, and `latest_by_subject`'s "last recorded wins" dedup means a

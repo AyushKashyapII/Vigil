@@ -102,23 +102,30 @@ def _unused_index_query(sb: Sandbox, finding: Finding) -> str | None:
     )
 
 
+def explain_once(sb: Sandbox, query: str) -> float:
+    """Runs EXPLAIN ANALYZE once, returns execution time in milliseconds.
+    Exposed separately from measure_ms for callers that need many
+    individual measurements summed (e.g. possible_n_plus_one benchmarking
+    N sequential calls) rather than one noise-reduced median.
+    """
+    result = subprocess.run(
+        [
+            "psql", *pg_args(sb.conn), "-d", sb.name,
+            "-t", "-A", "-c", f"EXPLAIN (ANALYZE, FORMAT JSON) {query}",
+        ],
+        env=env_for(sb.conn),
+        capture_output=True, text=True, check=True,
+    )
+    plan = json.loads(result.stdout)
+    return plan[0]["Execution Time"]
+
+
 def measure_ms(sb: Sandbox, query: str) -> float:
     """Runs EXPLAIN ANALYZE BENCHMARK_RUNS times, returns the median
     execution time in milliseconds. Multiple runs because a single
     EXPLAIN ANALYZE can be noisy (cache effects).
     """
-    times = []
-    for _ in range(BENCHMARK_RUNS):
-        result = subprocess.run(
-            [
-                "psql", *pg_args(sb.conn), "-d", sb.name,
-                "-t", "-A", "-c", f"EXPLAIN (ANALYZE, FORMAT JSON) {query}",
-            ],
-            env=env_for(sb.conn),
-            capture_output=True, text=True, check=True,
-        )
-        plan = json.loads(result.stdout)
-        times.append(plan[0]["Execution Time"])
+    times = [explain_once(sb, query) for _ in range(BENCHMARK_RUNS)]
     times.sort()
     return times[len(times) // 2]
 

@@ -2,9 +2,11 @@ from vigil_brain.actions.pr import build_pr, write_draft
 from vigil_brain.actions.slack import send_alert
 from vigil_brain.alerts import ALERTERS, is_fresh
 from vigil_brain.fixes.index import suggest_missing_index_fix, suggest_unused_index_fix
+from vigil_brain.fixes.nplusone import suggest_n_plus_one_fix
 from vigil_brain.fixes.rewrite import suggest_nested_subquery_rewrite
 from vigil_brain.parser.store import latest_by_subject, read_findings
 from vigil_brain.sandbox.verify import verify_fix
+from vigil_brain.sandbox.verify_nplusone import verify_n_plus_one
 from vigil_brain.sandbox.verify_rewrite import substitute_placeholders, verify_rewrite
 
 SUGGESTERS = [suggest_unused_index_fix, suggest_missing_index_fix]
@@ -79,6 +81,33 @@ def main() -> None:
 
             print(
                 f"  VERIFIED: {result.before_ms:.2f}ms -> {result.after_ms:.2f}ms, "
+                f"helped={result.helped}"
+            )
+            if result.helped:
+                print("  (dry run -- application-code PR generation not built yet, see ROADMAP.md)")
+        except Exception as e:
+            print(f"  SKIPPED finding {f.id} ({f.rule}): {e}")
+
+    for f in latest:
+        if f.rule != "possible_n_plus_one":
+            continue
+        try:
+            suggestion = suggest_n_plus_one_fix(f)
+            if suggestion is None:
+                print(f"N+1 [possible_n_plus_one] finding={f.id}: (query shape not handled)")
+                continue
+
+            print(f"N+1 FIX SUGGESTION [{suggestion.rule}] finding={f.id}: {suggestion.description}")
+
+            result = verify_n_plus_one(f)
+            if result is None:
+                print("  (not verifiable in the sandbox yet)")
+                continue
+
+            print(
+                f"  VERIFIED: {result.before_ms:.2f}ms (N sequential calls) -> "
+                f"{result.after_ms:.2f}ms (batched) "
+                f"({result.improvement_pct:.0f}% {'faster' if result.improvement_pct >= 0 else 'slower'}), "
                 f"helped={result.helped}"
             )
             if result.helped:
