@@ -102,7 +102,7 @@ def _unused_index_query(sb: Sandbox, finding: Finding) -> str | None:
     )
 
 
-def _measure_ms(sb: Sandbox, query: str) -> float:
+def measure_ms(sb: Sandbox, query: str) -> float:
     """Runs EXPLAIN ANALYZE BENCHMARK_RUNS times, returns the median
     execution time in milliseconds. Multiple runs because a single
     EXPLAIN ANALYZE can be noisy (cache effects).
@@ -141,9 +141,9 @@ def verify_fix(finding: Finding, fix: FixSuggestion) -> VerificationResult | Non
         if query is None:
             return None
         with Sandbox() as sb:
-            before_ms = _measure_ms(sb, query)
+            before_ms = measure_ms(sb, query)
             _apply_fix(sb, fix)
-            after_ms = _measure_ms(sb, query)
+            after_ms = measure_ms(sb, query)
 
     elif finding.rule == "possible_unused_index":
         if not _UNUSED_INDEX_SUBJECT_RE.match(finding.subject):
@@ -152,9 +152,9 @@ def verify_fix(finding: Finding, fix: FixSuggestion) -> VerificationResult | Non
             query = _unused_index_query(sb, finding)
             if query is None:
                 return None
-            before_ms = _measure_ms(sb, query)
+            before_ms = measure_ms(sb, query)
             _apply_fix(sb, fix)
-            after_ms = _measure_ms(sb, query)
+            after_ms = measure_ms(sb, query)
 
     else:
         return None

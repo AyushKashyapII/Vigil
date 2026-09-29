@@ -81,6 +81,14 @@ picked up, move it out of here into the actual work.
   loop. Worth reconsidering only if Vigil ever grows a separate one-time
   "schema audit" mode, distinct from the rules that run every poll cycle.
 
+- **Query-rewrite fixes (`nested_subquery`, sandbox-verified) don't get PR
+  drafts yet.** `actions/pr.py` generates an Alembic migration -- the
+  right shape for a schema change (an index), completely the wrong shape
+  for a rewrite, which means editing the literal SQL inside application
+  source (`demo-app/app/main.py`). Needs a source-diff generator, not a
+  migration generator -- a genuinely different action, not an extension
+  of the existing one. Stays console-only for now.
+
 ## Infrastructure / hardening
 - **Findings have no resolution/expiry concept -- the store only ever
   grows, and `latest_by_subject`'s "last recorded wins" dedup means a

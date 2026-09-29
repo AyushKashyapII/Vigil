@@ -88,6 +88,8 @@ services:
       SANDBOX_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/demo
       ALEMBIC_VERSIONS_DIR: /alembic-versions
       PROPOSALS_DIR: /proposals
+      # From infra/.env, gitignored -- never hardcode a real key here.
+      GROQ_API_KEY: ${GROQ_API_KEY}
     volumes:
       # Same volume collector writes vigil.db to, mounted read-only --
       # brain only ever reads the store, never writes to it.

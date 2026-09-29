@@ -42,3 +42,8 @@ Thumbs.db
 # dry-run PR drafts written by brain/vigil_brain/actions/pr.py -- generated
 # output, not source
 /proposals/
+
+# secrets -- GROQ_API_KEY etc, read by docker-compose.yml via ${VAR}
+# interpolation, never committed
+.env
+
