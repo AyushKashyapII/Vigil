@@ -1,6 +1,6 @@
 # Vigil
 
-**An autonomous PostgreSQL optimization agent that proves its fixes work before suggesting them — not "the AI thinks this might help," an actual before/after benchmark run in a disposable clone of your database.**
+![Vigil — an autonomous PostgreSQL optimization agent](public/Vigil_logo.png)
 
 Vigil watches a live Postgres instance, detects real problems (missing indexes, wasted indexes, N+1 query patterns, correlated subqueries, unbounded result sets, stuck transactions, connection exhaustion), and for anything it can *fix* rather than just *flag*, it clones the database into a throwaway sandbox, applies the fix, and benchmarks before vs. after. If the fix doesn't measurably help — or, for LLM-proposed rewrites, doesn't even return the same results — it's silently discarded. Nothing gets proposed on a guess.
 
@@ -28,6 +28,10 @@ Every row below reflects real, working code — not a roadmap. All seven detecti
 
 Every number below came from an actual sandboxed benchmark run against real data during development, not a synthetic example.
 
+![Results from real benchmark runs — table of before/after timings for each fix, all sandbox-proven](public/Vigil_stats.png)
+
+Same data, as a table (for search/copy-paste):
+
 | Finding | Before | After | Change | How it was proven |
 |---|---|---|---|---|
 | Missing index, `orders.user_id` | 6.50ms | 0.28ms | **96% faster** | `CREATE INDEX`, timed before/after in a disposable clone |
@@ -42,33 +46,7 @@ The unused-index row matters as much as the fast ones: it's the system correctly
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    subgraph PG["PostgreSQL"]
-        direction TB
-        S1["pg_stat_statements"]
-        S2["pg_stat_activity"]
-        S3["pg_stat_user_tables"]
-        S4["pg_stat_user_indexes"]
-    end
-
-    PG -->|polls every 5s| C["Go Collector\n7 detection rules"]
-    C -->|append-only, WAL mode| DB[("SQLite store")]
-    DB --> B["Python Brain"]
-
-    B --> D1{"Fix is\nmechanical?"}
-    D1 -->|"yes: index / batch"| F1["Deterministic\nfix template"]
-    D1 -->|"no: needs reasoning"| F2["LLM rewrite\n(Groq)"]
-    B --> D2{"Operational,\nnot provable?"}
-    D2 -->|yes| F3["Live alert"]
-
-    F1 --> SB["Disposable sandbox\n(pg_dump clone)"]
-    F2 --> SB
-    SB -->|"benchmark + correctness check"| V{"Proven faster\nAND correct?"}
-    V -->|yes| PR["PR draft (dry-run)"]
-    V -->|no| X["Discarded, logged"]
-    F3 --> SL["Slack message (dry-run)"]
-```
+![Vigil architecture: PostgreSQL stats sources feed the Go collector, which persists findings to a SQLite store, read by the Python brain; findings route to a deterministic fix template, an LLM rewrite, or a live alert; fixes go through a disposable sandbox that benchmarks and correctness-checks before a PR draft is written or the result is discarded](public/Vigil_architecture.png)
 
 ### The sandbox: "prove it, don't trust it" in detail
 
@@ -126,6 +104,7 @@ vigil/
 ├── demo-app/                # FastAPI + SQLAlchemy "victim" app -- deliberately bad
 │                             #   query patterns, used to generate real findings
 ├── infra/                  # docker-compose: Postgres, demo-app, PgBouncer, collector, brain
+├── public/                  # README images (logo, architecture, results)
 ├── ROADMAP.md               # everything deliberately deferred, and why
 └── learning-log.md          # real bugs hit during development, root-caused
 ```
