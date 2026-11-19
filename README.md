@@ -72,7 +72,92 @@ The root cause turned out to be one query with a missing scope: `pg_stat_stateme
 
 One `WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())` fixed both symptoms at once, because they'd always been the same bug. Five other real bugs were found and root-caused the same way during development — a Cloudflare 403 that had nothing to do with the API key, SQLite's default journal mode silently blocking concurrent readers, a regex that attributed a WHERE-clause filter to the wrong table in a JOIN — kept as personal notes, not published in this repo.
 
-The correctness check in the sandbox caught its own class of bug too: when pointed at real, gnarly Postgres internals (via `pg_dump`'s own catalog queries), the LLM produced plausible-*looking* rewrites for 8 different queries — 6 of them were subtly wrong (different result sets) and were rejected automatically, before their timing was ever considered.
+The correctness check in the sandbox caught its own class of bug too: when pointed at real, gnarly Postgres internals (via `pg_dump`'s own catalog queries), the LLM produced plausible-*looking* rewrites for 8 different queries — 6 of them were subtly wrong (different result sets) and were rejected automatically, before their timing was ever considered. *(Tracing later showed that some of those rejections were Vigil's checker being wrong, not the LLM — see below.)*
+
+---
+
+## Observability: Vigil instrumented with OpenTelemetry, viewed in SigNoz
+
+A tool that watches someone else's database should be able to answer questions about *itself*: how long does a poll take, which fixes actually helped, how often is the LLM wrong. All three services export traces and metrics over OTLP to a self-hosted [SigNoz](https://signoz.io). Nothing in the code names SigNoz; it's configured entirely through the standard `OTEL_*` environment variables.
+
+| Service | How | Traces | Metrics |
+|---|---|---|---|
+| `vigil-demo-app` (FastAPI) | Zero-code: `opentelemetry-instrument` | One span per HTTP request + one per SQL statement, so an N+1 shows up as a waterfall of ~100 `SELECT`s | — |
+| `vigil-collector` (Go) | Manual, OTel Go SDK | One trace per poll cycle: `poll <source>` → `rules <group>` (each finding as a span event) → `store.save_findings` | `vigil.poll.duration` (histogram, explicit buckets in seconds), `vigil.findings.detected{vigil.rule}`, `vigil.poll.errors{vigil.source}`, `vigil.statements.tracked/orphaned`, `vigil.connections.utilization` |
+| `vigil-brain` (Python) | Manual, OTel Python SDK | One trace per finding: `verify_fix` → `chat <model>` (GenAI semconv, token usage) → `sandbox.clone` → `rewrite.diff` → `benchmark.before` → `fix.apply` → `benchmark.after` → `sandbox.drop` | `vigil.fixes.verified{vigil.rule, vigil.verdict}`, `vigil.fix.latency_ratio`, `vigil.llm.rewrites.rejected{reason}` |
+
+### Linking two services that never talk to each other
+
+The collector and brain never call each other: they only meet through the SQLite `findings` table, which acts as a queue. Context propagation still works, just over a different carrier. The collector writes the W3C `traceparent` of the span that *detected* each finding into the row; brain reads it back and starts its verification trace with a **span link** to it:
+
+```mermaid
+sequenceDiagram
+    participant C as collector: rules span
+    participant DB as SQLite findings table
+    participant B as brain: verify_fix span
+
+    C->>DB: INSERT finding + traceparent (00-traceid-spanid-01)
+    Note over DB: minutes or hours later
+    DB->>B: SELECT finding, traceparent
+    B-->>C: span LINK (not parent): "detected_by"
+```
+
+It's a link, not a parent/child relationship, on purpose. A child is *part of* its parent's operation and falls within its lifetime. Brain's work happens long after a ~150ms poll cycle has ended, the collector never waits for it, and a single brain run handles findings from many cycles. Making it a child would stretch one poll trace across hours. A link says "caused by", which is the standard pattern for anything that goes through a queue. Verified by joining in ClickHouse: 25/25 brain traces linked to a real collector span that carried the same `vigil.finding.id`.
+
+| Found here (collector) | Fixed here (brain, linked) |
+|---|---|
+| ![Collector poll cycle trace with the rules span that detected the finding](docs/screenshots/12b-collector-detection-overview.png) | ![Brain verify_fix trace linked back to the collector span](docs/screenshots/12a-brain-verify-linked-overview.png) |
+
+### What the telemetry found (things nothing else would have shown)
+
+1. **The collector was spending most of each poll cycle on fsync.** Per-insert spans showed every SQLite write costing a near-constant ~37ms (one WAL commit, one fsync), multiplied by every finding. Batching each cycle's findings into one transaction brought poll cycle **p50 from 557ms to 158ms and p95 from 2,164ms to 462ms** (212 cycles before, 2,894 after).
+
+   | One span per insert | One batched save |
+   |---|---|
+   | ![Poll cycle with many store.save_finding spans](docs/screenshots/06a-sqlite-before-per-insert.png) | ![Poll cycle with one store.save_findings span](docs/screenshots/06b-sqlite-after-batched.png) |
+
+2. **Many "rejected" LLM rewrites were rejected wrongly.** The `rewrite.diff` span recorded the actual error: a trailing `;` from the LLM broke the `EXCEPT` wrapper, and placeholder substitution turned `false` into `0`, so even the *original* query couldn't run. The dashboard's "87.5% of rewrites rejected" is partly measuring Vigil's own checker. Fixing that is next.
+
+   ![Rejected rewrite trace: chat span with token usage, rewrite.diff span carrying the syntax error](docs/screenshots/11-llm-rewrite-trace.png)
+
+3. **`sandbox.clone` takes about 56% of every verification.** The benchmarks themselves are tiny next to the `pg_dump | psql` clone, which happens once per finding. Cloning from a template database is the obvious next optimisation.
+
+   ![N+1 verification trace where the sandbox.clone bar dwarfs the benchmarks](docs/screenshots/11b-sandbox-clone-cost.png)
+
+4. **Brain's sandboxes are evicting the statistics the collector reads.** The `dbid` filter described above stops orphaned `pg_stat_statements` entries from *polluting* results, but they still take up space. The dashboard showed ~4,700 orphaned entries against ~120 live ones, and `pg_stat_statements.max` is 5,000. `pg_stat_statements_info.dealloc` confirmed Postgres had **already evicted entries 37 times** in five hours. Vigil's verification step is slowly erasing its own input.
+
+5. **Brain's metrics were undercounted.** Brain runs once and exits. With the SDK's default *cumulative* temporality, every run starts a new series whose first point has nothing before it, so `increase()` counts it as zero. The dashboard showed 4 rejected rewrites where the traces showed 9. Switching brain to **delta** temporality made metrics and traces agree exactly. Traces were the ground truth that exposed it.
+
+### Dashboard and alert, as code
+
+The dashboard and alert are created through SigNoz's API from JSON committed in [`infra/signoz/`](infra/signoz/), not built by clicking.
+
+- **Dashboard** ([`dashboards/vigil.json`](infra/signoz/dashboards/vigil.json)), 9 panels: findings by rule over time; fix latency before vs after (from brain's spans); LLM rewrite rejection share and outcomes; fix verdicts by rule; poll duration p50/p95; tracked vs orphaned statements; connection utilization; poll errors.
+- **Alert** ([`alerts/postgres-max-connections.json`](infra/signoz/alerts/postgres-max-connections.json)): `vigil.connections.utilization > 0.8` for every point in a 1-minute window. Vigil exports the raw measurement and SigNoz owns the threshold, so it can be tuned without redeploying Go code. It was tested end to end, not with the "test alert" button, which reports a hit at any threshold:
+  - `infra/demo-connections.sh` opened 86 idle `pg_sleep` sessions (90/100).
+  - The alert fired about 3 minutes later. That delay is the 10s export interval, plus the 1-minute window, plus up to 1 minute until the next evaluation.
+  - The webhook payload was received by [`alert-sink.py`](infra/signoz/alert-sink.py).
+  - When the sessions ended, the rule went back to inactive and a `resolved` notification arrived.
+
+### Running it
+
+SigNoz runs as its own compose project, and Vigil's services join its `signoz-network`, so **start SigNoz first**:
+
+```bash
+cd infra/signoz
+foundryctl cast -f casting.yaml     # SigNoz UI on http://localhost:8080
+# open the UI and create the admin account; the OTLP receiver stays closed until then
+
+# Settings → Service Accounts → new account → Keys → Add Key, then:
+mkdir -p ~/.config/vigil && read -rs k && printf '%s' "$k" > ~/.config/vigil/signoz-api-key && chmod 600 ~/.config/vigil/signoz-api-key
+
+docker run -d --name vigil-alert-sink --network signoz-network \
+  -v "$PWD/alert-sink.py:/sink.py:ro" python:3.12-slim python -u /sink.py
+./provision.sh                      # channel + dashboard + alert (idempotent)
+
+cd .. && docker compose up -d       # then see "Getting started" below
+./demo-connections.sh               # make the alert fire
+```
 
 ---
 
@@ -94,6 +179,10 @@ vigil/
 ├── demo-app/                # FastAPI + SQLAlchemy "victim" app -- deliberately bad
 │                             #   query patterns, used to generate real findings
 ├── infra/                  # docker-compose: Postgres, demo-app, PgBouncer, collector, brain
+│   ├── signoz/             #   SigNoz install (Foundry), dashboard + alert JSON, provision.sh
+│   ├── demo-orphans.sh     #   creates orphaned pg_stat_statements entries
+│   └── demo-connections.sh #   pushes Postgres to ~90% of max_connections (fires the alert)
+├── docs/screenshots/       # SigNoz traces/dashboard used in this README
 ├── public/                  # README images (logo, architecture, results)
 ├── ROADMAP.md               # everything deliberately deferred, and why
 └── learning-log.md          # real bugs hit during development, root-caused
@@ -111,6 +200,9 @@ cd vigil/infra
 # (index fixes, N+1 batching, all alerts) works without it.
 echo "GROQ_API_KEY=<your key>" > .env
 
+# Services export telemetry to SigNoz and join its Docker network, so SigNoz
+# must be running first (see "Running it" under Observability above).
+# Without it, `up` fails fast: network signoz-network not found.
 docker compose up -d
 
 cd ../demo-app
@@ -148,6 +240,7 @@ The short version — full detail with reasoning for every item is in [`ROADMAP.
 - **PgBouncer pool-mode recommendation.** Nothing in the current stack actually routes traffic through PgBouncer yet, so there's nothing real to reason about pooling from.
 - **Table/index bloat detection.** Built, but disabled — every test so far had autovacuum clean up dead tuples before the threshold was honestly crossed. Needs a bigger, busier table to test against.
 - **pgvector/HNSW index health.** The demo app already seeds the exact bug (an HNSW index built on an empty table); nothing detects it yet.
+- **Fixes the telemetry pointed at.** Strip the LLM's trailing `;` and stop `false` → `0` placeholder substitution (false rewrite rejections); clone sandboxes from a template database (~56% of verify time); reset a sandbox's `pg_stat_statements` entries when it's dropped (evictions); export `pg_stat_statements_info.dealloc` as a metric and alert on it.
 - **Findings staleness/expiry.** The store only ever grows; a finding whose condition has since resolved doesn't currently get marked as such.
 
 ---
@@ -191,6 +284,9 @@ Schema is managed by [Alembic](https://alembic.sqlalchemy.org/) (`demo-app/alemb
 
 ```bash
 cd infra
+# Services export telemetry to SigNoz and join its Docker network, so SigNoz
+# must be running first (see "Running it" under Observability above).
+# Without it, `up` fails fast: network signoz-network not found.
 docker compose up -d
 
 cd ../demo-app
