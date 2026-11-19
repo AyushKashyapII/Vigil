@@ -127,6 +127,15 @@ services:
       OTEL_RESOURCE_ATTRIBUTES: deployment.environment=dev
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://signoz-ingester:4317}
       OTEL_EXPORTER_OTLP_INSECURE: "true"
+      # DELTA, not the SDK's default cumulative. brain is a run-once job: each
+      # run is a brand-new process, so with cumulative every run starts a new
+      # series whose FIRST point has nothing before it to diff against --
+      # increase()/rate() count it as 0. For a process that only exports once
+      # or twice before exiting, that silently dropped most of the counts
+      # (dashboard showed 4 rejected rewrites; the raw data had 9). With delta,
+      # each export carries its own increment, so nothing depends on a
+      # previous point. The collector is long-lived and stays cumulative.
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: delta
     networks:
       - default
       - signoz

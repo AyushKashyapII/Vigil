@@ -1,0 +1,89 @@
+{
+  "alert": "Postgres approaching max_connections",
+  "alertType": "METRIC_BASED_ALERT",
+  "ruleType": "threshold_rule",
+  "condition": {
+    "compositeQuery": {
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "stepInterval": 0,
+            "signal": "metrics",
+            "source": "",
+            "aggregations": [
+              {
+                "metricName": "vigil.connections.utilization",
+                "temporality": "unspecified",
+                "timeAggregation": "latest",
+                "spaceAggregation": "max",
+                "reduceTo": ""
+              }
+            ],
+            "disabled": false,
+            "filter": {
+              "expression": ""
+            },
+            "groupBy": [],
+            "order": null,
+            "selectFields": null,
+            "secondaryAggregations": null,
+            "functions": null,
+            "legend": "utilization"
+          }
+        }
+      ],
+      "panelType": "graph",
+      "queryType": "builder"
+    },
+    "alertOnAbsent": false,
+    "absentFor": 0,
+    "seasonality": "",
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "critical",
+          "target": 0.8,
+          "targetUnit": "",
+          "recoveryTarget": null,
+          "matchType": "all_the_times",
+          "op": "above",
+          "channels": [
+            "vigil-alert-sink"
+          ]
+        }
+      ]
+    }
+  },
+  "labels": {
+    "project": "vigil",
+    "service": "postgres",
+    "severity": "critical"
+  },
+  "annotations": {
+    "description": "Open client connections / max_connections, measured by vigil-collector from pg_stat_activity, stayed above 80% for a full minute. New connections start failing at 100%. Check for a connection leak or a pool sized past max_connections; the collector's approaching_max_connections finding (vigil.poll_cycle traces) has the per-state breakdown.",
+    "summary": "Postgres connections at {{$value}} of max_connections (threshold {{$threshold}})"
+  },
+  "disabled": false,
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "1m0s",
+      "frequency": "1m0s"
+    }
+  },
+  "schemaVersion": "v2alpha1",
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": false,
+      "interval": "30m",
+      "alertStates": []
+    },
+    "usePolicy": false,
+    "newGroupEvalDelay": "0s"
+  }
+}

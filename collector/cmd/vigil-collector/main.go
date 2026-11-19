@@ -183,6 +183,10 @@ func (c *collector) pollOnce(ctx context.Context, tick int) {
 		return metrics.PollActivity(ctx, c.pool)
 	})
 	if err == nil {
+		c.inst.ConnectionsUsed.Record(ctx, int64(len(activity)))
+		if c.maxConnections > 0 { // same guard as DetectApproachingMaxConnections
+			c.inst.ConnUtilization.Record(ctx, float64(len(activity))/float64(c.maxConnections))
+		}
 		c.evaluate(ctx, "activity", func() []rules.Finding { return rules.EvaluateActivity(activity) })
 		c.evaluate(ctx, "connections", func() []rules.Finding {
 			return rules.EvaluateConnectionCount(len(activity), c.maxConnections)

@@ -25,6 +25,8 @@ type Instruments struct {
 	FindingsDetected   metric.Int64Counter
 	StatementsTracked  metric.Int64Gauge
 	StatementsOrphaned metric.Int64Gauge
+	ConnectionsUsed    metric.Int64Gauge
+	ConnUtilization    metric.Float64Gauge
 }
 
 // NewInstruments creates the instruments from the global MeterProvider.
@@ -75,6 +77,24 @@ func NewInstruments() (*Instruments, error) {
 	if inst.StatementsOrphaned, err = m.Int64Gauge("vigil.statements.orphaned",
 		metric.WithDescription("pg_stat_statements entries whose database no longer exists (e.g. dropped sandbox clones)."),
 		metric.WithUnit("{statement}"),
+	); err != nil {
+		return nil, err
+	}
+
+	if inst.ConnectionsUsed, err = m.Int64Gauge("vigil.connections.used",
+		metric.WithDescription("Client connections open on the monitored Postgres (pg_stat_activity, excluding background processes)."),
+		metric.WithUnit("{connection}"),
+	); err != nil {
+		return nil, err
+	}
+
+	// The raw measurement behind the approaching_max_connections rule,
+	// exported so the THRESHOLD can live in the alerting tool (SigNoz)
+	// instead of only in Go code -- alerting on a measurement, rather than
+	// on a count of findings (which would be alerting on an alert).
+	if inst.ConnUtilization, err = m.Float64Gauge("vigil.connections.utilization",
+		metric.WithDescription("Open client connections / max_connections (0..1). Only recorded when max_connections is known."),
+		metric.WithUnit("1"),
 	); err != nil {
 		return nil, err
 	}
