@@ -60,3 +60,35 @@ func PollStatements(ctx context.Context, pool *pgxpool.Pool) ([]StatementStat, e
 
 	return stats, nil
 }
+
+// StatementCounts is how many pg_stat_statements entries belong to the
+// monitored database vs. to databases that no longer exist at all.
+type StatementCounts struct {
+	Tracked  int64
+	Orphaned int64
+}
+
+// CountStatements counts pg_stat_statements entries cluster-wide, WITHOUT
+// the dbid filter PollStatements applies -- deliberately, since the point
+// is to measure what that filter hides. Orphans are entries whose dbid
+// matches no row in pg_database: statements from databases that were
+// dropped (Vigil's own vigil_sandbox_* clones, mostly). pg_stat_statements
+// never removes them on DROP DATABASE, and they still count against
+// pg_stat_statements.max (default 5000) -- enough of them and Postgres
+// starts evicting the live database's statements to make room.
+//
+// pg_stat_statements(false) skips reading query texts from disk: only
+// counts are needed here, and the text file is the expensive part.
+func CountStatements(ctx context.Context, pool *pgxpool.Pool) (StatementCounts, error) {
+	var c StatementCounts
+	err := pool.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())),
+			count(*) FILTER (WHERE dbid NOT IN (SELECT oid FROM pg_database))
+		FROM pg_stat_statements(false)
+	`).Scan(&c.Tracked, &c.Orphaned)
+	if err != nil {
+		return StatementCounts{}, fmt.Errorf("counting pg_stat_statements entries: %w", err)
+	}
+	return c, nil
+}

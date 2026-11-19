@@ -14,7 +14,8 @@ from dataclasses import dataclass
 
 from vigil_brain.parser.store import Finding
 from vigil_brain.sandbox.postgres_sandbox import Sandbox, env_for, pg_args
-from vigil_brain.sandbox.verify import HELPED_THRESHOLD, measure_ms
+from vigil_brain.sandbox.verify import HELPED_THRESHOLD, benchmark, measure_ms
+from vigil_brain.telemetry import tracer
 
 # WHERE-clause equality filter, e.g. "WHERE orders.user_id = $2" -- same
 # shape possible_missing_index correlates against.
@@ -29,6 +30,10 @@ class RewriteVerificationResult:
     before_ms: float | None
     after_ms: float | None
     helped: bool
+    # Why results_match is False: "results_differ" (diff ran, rows
+    # differ) or "diff_failed" (diff couldn't even run, e.g. column
+    # count/type mismatch). A closed set -- it's a metric attribute.
+    reject_reason: str | None = None
 
 
 def substitute_placeholders(query: str) -> str:
@@ -73,22 +78,38 @@ def verify_rewrite(finding: Finding, rewritten_query: str) -> RewriteVerificatio
     original_query = substitute_placeholders(finding.query)
 
     with Sandbox() as sb:
-        try:
-            match = _results_match(sb, original_query, rewritten_query)
-        except subprocess.CalledProcessError:
-            # Couldn't even run the diff (e.g. mismatched column count/
-            # types) -- treat that as "not equivalent", not an error to
-            # propagate. A rewrite that can't be compared can't be trusted.
-            match = False
+        with tracer.start_as_current_span(
+            "rewrite.diff",
+            attributes={"db.system": "postgresql", "vigil.rewrite.query": rewritten_query},
+        ) as span:
+            reject_reason = None
+            try:
+                match = _results_match(sb, original_query, rewritten_query)
+                if not match:
+                    reject_reason = "results_differ"
+            except subprocess.CalledProcessError as e:
+                # Couldn't even run the diff (e.g. mismatched column count/
+                # types) -- treat that as "not equivalent", not an error to
+                # propagate. A rewrite that can't be compared can't be trusted.
+                match = False
+                reject_reason = "diff_failed"
+                span.set_attribute("vigil.rewrite.diff_error", (e.stderr or "").strip()[:1000])
+
+            span.set_attribute("vigil.rewrite.results_match", match)
+            if not match:
+                # An EVENT, not an error status: a rejected rewrite is the
+                # safety check WORKING, not something broken.
+                span.add_event("rewrite.rejected", {"vigil.reject_reason": reject_reason})
 
         if not match:
             return RewriteVerificationResult(
                 finding_id=finding.id, results_match=False,
                 before_ms=None, after_ms=None, helped=False,
+                reject_reason=reject_reason,
             )
 
-        before_ms = measure_ms(sb, original_query)
-        after_ms = measure_ms(sb, rewritten_query)
+        before_ms = benchmark("benchmark.before", original_query, lambda: measure_ms(sb, original_query))
+        after_ms = benchmark("benchmark.after", rewritten_query, lambda: measure_ms(sb, rewritten_query))
 
     return RewriteVerificationResult(
         finding_id=finding.id,

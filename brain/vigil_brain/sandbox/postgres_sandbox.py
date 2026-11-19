@@ -14,6 +14,8 @@ import uuid
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from vigil_brain.telemetry import tracer
+
 DEFAULT_SOURCE_URL = "postgresql://postgres:postgres@localhost:5432/demo"
 
 
@@ -63,12 +65,19 @@ class Sandbox:
         self.name = f"vigil_sandbox_{uuid.uuid4().hex[:12]}"
 
     def __enter__(self) -> "Sandbox":
-        self._create()
-        self._clone()
+        # Usually the most expensive step of a whole verification: a full
+        # pg_dump of the real database piped into psql. Worth seeing on
+        # its own in the trace, next to the benchmarks it enables.
+        with tracer.start_as_current_span(
+            "sandbox.clone", attributes={"db.system": "postgresql", "vigil.sandbox.name": self.name},
+        ):
+            self._create()
+            self._clone()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._drop()
+        with tracer.start_as_current_span("sandbox.drop", attributes={"vigil.sandbox.name": self.name}):
+            self._drop()
 
     def _create(self) -> None:
         subprocess.run(

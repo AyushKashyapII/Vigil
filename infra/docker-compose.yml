@@ -80,6 +80,17 @@ services:
     environment:
       COLLECTOR_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/demo
       COLLECTOR_STORE_PATH: /data/vigil.db
+      # --- OpenTelemetry (read by the Go SDK, see internal/telemetry) ---
+      OTEL_SERVICE_NAME: vigil-collector
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=dev
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://signoz-ingester:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      # SDK default is 60s. The collector polls every 5s, so a 60s export
+      # would make every gauge a coarse 1-minute step on the dashboard.
+      OTEL_METRIC_EXPORT_INTERVAL: "10000"
+    networks:
+      - default
+      - signoz
     volumes:
       - collector_data:/data
     # Postgres accepting a TCP connection isn't the same as it being ready
@@ -111,6 +122,14 @@ services:
       PROPOSALS_DIR: /proposals
       # From infra/.env, gitignored -- never hardcode a real key here.
       GROQ_API_KEY: ${GROQ_API_KEY}
+      # --- OpenTelemetry (read by the Python SDK, see vigil_brain/telemetry.py) ---
+      OTEL_SERVICE_NAME: vigil-brain
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=dev
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://signoz-ingester:4317}
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+    networks:
+      - default
+      - signoz
     volumes:
       # Same volume collector writes vigil.db to, mounted read-only --
       # brain only ever reads the store, never writes to it.

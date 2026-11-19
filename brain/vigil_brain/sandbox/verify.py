@@ -21,10 +21,12 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass
+from typing import Callable
 
 from vigil_brain.fixes.index import FixSuggestion
 from vigil_brain.parser.store import Finding
 from vigil_brain.sandbox.postgres_sandbox import Sandbox, env_for, pg_args
+from vigil_brain.telemetry import tracer
 
 BENCHMARK_RUNS = 3
 # At least this much faster to call it a real improvement, not noise.
@@ -130,12 +132,30 @@ def measure_ms(sb: Sandbox, query: str) -> float:
     return times[len(times) // 2]
 
 
+def benchmark(name: str, query: str, run: Callable[[], float], **attrs) -> float:
+    """Runs one benchmark (anything returning milliseconds) inside a
+    span named `name` -- benchmark.before / benchmark.after -- and puts
+    the measured time on the span. Shared by every verifier so all three
+    fix paths produce the same span shape.
+    """
+    with tracer.start_as_current_span(
+        name,
+        attributes={"db.system": "postgresql", "db.query.text": query, **attrs},
+    ) as span:
+        ms = run()
+        span.set_attribute("vigil.benchmark.ms", ms)
+        return ms
+
+
 def _apply_fix(sb: Sandbox, fix: FixSuggestion) -> None:
-    subprocess.run(
-        ["psql", *pg_args(sb.conn), "-d", sb.name, "-c", fix.sql],
-        env=env_for(sb.conn),
-        capture_output=True, text=True, check=True,
-    )
+    with tracer.start_as_current_span(
+        "fix.apply", attributes={"db.system": "postgresql", "db.query.text": fix.sql},
+    ):
+        subprocess.run(
+            ["psql", *pg_args(sb.conn), "-d", sb.name, "-c", fix.sql],
+            env=env_for(sb.conn),
+            capture_output=True, text=True, check=True,
+        )
 
 
 def verify_fix(finding: Finding, fix: FixSuggestion) -> VerificationResult | None:
@@ -148,9 +168,9 @@ def verify_fix(finding: Finding, fix: FixSuggestion) -> VerificationResult | Non
         if query is None:
             return None
         with Sandbox() as sb:
-            before_ms = measure_ms(sb, query)
+            before_ms = benchmark("benchmark.before", query, lambda: measure_ms(sb, query))
             _apply_fix(sb, fix)
-            after_ms = measure_ms(sb, query)
+            after_ms = benchmark("benchmark.after", query, lambda: measure_ms(sb, query))
 
     elif finding.rule == "possible_unused_index":
         if not _UNUSED_INDEX_SUBJECT_RE.match(finding.subject):
@@ -159,9 +179,9 @@ def verify_fix(finding: Finding, fix: FixSuggestion) -> VerificationResult | Non
             query = _unused_index_query(sb, finding)
             if query is None:
                 return None
-            before_ms = measure_ms(sb, query)
+            before_ms = benchmark("benchmark.before", query, lambda: measure_ms(sb, query))
             _apply_fix(sb, fix)
-            after_ms = measure_ms(sb, query)
+            after_ms = benchmark("benchmark.after", query, lambda: measure_ms(sb, query))
 
     else:
         return None

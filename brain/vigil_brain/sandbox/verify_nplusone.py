@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from vigil_brain.parser.store import Finding
 from vigil_brain.sandbox.postgres_sandbox import Sandbox, env_for, pg_args
-from vigil_brain.sandbox.verify import HELPED_THRESHOLD, explain_once, measure_ms
+from vigil_brain.sandbox.verify import HELPED_THRESHOLD, benchmark, explain_once, measure_ms
 
 _SIMPLE_LOOKUP_RE = re.compile(
     r"FROM\s+(\w+)\s+WHERE\s+\1\.(\w+)\s*=\s*\$1\s*$",
@@ -92,10 +92,17 @@ def verify_n_plus_one(finding: Finding) -> NPlusOneVerificationResult | None:
         if len(values) < 2:
             return None  # not enough real data to meaningfully benchmark
 
-        before_total = sum(
-            explain_once(sb, _query_for_value(finding.query, v)) for v in values
+        # "before" is N separate lookups summed -- what the app does today.
+        before_total = benchmark(
+            "benchmark.before", finding.query,
+            lambda: sum(explain_once(sb, _query_for_value(finding.query, v)) for v in values),
+            **{"vigil.benchmark.mode": "sequential", "vigil.benchmark.calls": len(values)},
         )
-        after_ms = measure_ms(sb, _batched_query(finding.query, table, column, values))
+        batched = _batched_query(finding.query, table, column, values)
+        after_ms = benchmark(
+            "benchmark.after", batched, lambda: measure_ms(sb, batched),
+            **{"vigil.benchmark.mode": "batched", "vigil.benchmark.calls": 1},
+        )
 
     return NPlusOneVerificationResult(
         finding_id=finding.id,

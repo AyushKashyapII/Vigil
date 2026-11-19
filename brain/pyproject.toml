@@ -3,7 +3,13 @@ name = "vigil_brain"
 version = "0.1.0"
 description = "Vigil brain: parses collector output and drives LLM-based analysis."
 requires-python = ">=3.11"
-dependencies = []
+# Was stdlib-only. OpenTelemetry is the one deliberate exception: it's
+# brain's observability, not a driver for doing its job (sandbox still
+# shells out to psql; the LLM client is still plain urllib).
+dependencies = [
+    "opentelemetry-sdk>=1.30",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.30",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -17,6 +17,7 @@ import (
 // multi-collector deployment) without touching any calling code.
 type Store interface {
 	SaveFinding(ctx context.Context, f rules.Finding) error
+	SaveFindings(ctx context.Context, fs []rules.Finding) error
 	Close() error
 }
 
@@ -87,6 +88,44 @@ func (s *SQLiteStore) SaveFinding(ctx context.Context, f rules.Finding) error {
 	`, time.Now().UTC().Format(time.RFC3339Nano), f.Rule, f.Subject, f.Query, f.Detail)
 	if err != nil {
 		return fmt.Errorf("saving finding: %w", err)
+	}
+	return nil
+}
+
+// SaveFindings persists a batch of findings in ONE transaction.
+//
+// Why this exists: every SaveFinding call is its own implicit transaction,
+// and every commit in WAL mode ends in an fsync. Tracing the collector
+// (Phase 1, store.save_finding spans) showed ~40ms per insert -- with
+// 10+ findings per cycle, store writes were most of a 1.3s poll cycle.
+// One transaction means one commit, so one fsync per batch.
+func (s *SQLiteStore) SaveFindings(ctx context.Context, fs []rules.Finding) error {
+	if len(fs) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning findings tx: %w", err)
+	}
+	defer tx.Rollback() // no-op after a successful Commit
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO findings (recorded_at, rule, subject, query, detail)
+		VALUES (?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return fmt.Errorf("preparing finding insert: %w", err)
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, f := range fs {
+		if _, err := stmt.ExecContext(ctx, now, f.Rule, f.Subject, f.Query, f.Detail); err != nil {
+			return fmt.Errorf("saving finding: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing findings: %w", err)
 	}
 	return nil
 }
