@@ -132,6 +132,11 @@ It's a link, not a parent/child relationship, on purpose. A child is *part of* i
 
 The dashboard and alert are created through SigNoz's API from JSON committed in [`infra/signoz/`](infra/signoz/), not built by clicking.
 
+![Vigil dashboard in SigNoz, top half: findings by rule, connection utilization with the alert test spike, poll cycle p50/p95, pg_stat_statements tracked vs orphaned](docs/screenshots/13-dashboard-top.png)
+![Vigil dashboard, bottom half: fix latency before vs after per rule, 88% of LLM rewrites rejected, LLM rewrite outcomes, fix verdicts by rule, poll errors (none)](docs/screenshots/13-dashboard-bottom.png)
+
+<sub>Times shown in IST (UTC+5:30). The spike at the far right of "Connection utilization" is the alert test below. In the orphaned-statements panel, the step-ups are `demo-orphans.sh` and brain runs, each leaving dropped sandbox databases' entries behind. "Poll errors" is empty because no poll has failed: a counter series only exists after its first increment.</sub>
+
 - **Dashboard** ([`dashboards/vigil.json`](infra/signoz/dashboards/vigil.json)), 9 panels: findings by rule over time; fix latency before vs after (from brain's spans); LLM rewrite rejection share and outcomes; fix verdicts by rule; poll duration p50/p95; tracked vs orphaned statements; connection utilization; poll errors.
 - **Alert** ([`alerts/postgres-max-connections.json`](infra/signoz/alerts/postgres-max-connections.json)): `vigil.connections.utilization > 0.8` for every point in a 1-minute window. Vigil exports the raw measurement and SigNoz owns the threshold, so it can be tuned without redeploying Go code. It was tested end to end, not with the "test alert" button, which reports a hit at any threshold:
   - `infra/demo-connections.sh` opened 86 idle `pg_sleep` sessions (90/100).
