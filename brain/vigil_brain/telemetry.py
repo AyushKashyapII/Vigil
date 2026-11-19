@@ -27,7 +27,8 @@ from contextlib import contextmanager
 from typing import Callable
 
 from opentelemetry import metrics, trace
-from opentelemetry.trace import Span
+from opentelemetry.trace import Link, Span
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 # Attribute keys -- same names the Go collector uses, so one SigNoz query
 # can group both services' telemetry by rule.
@@ -44,6 +45,11 @@ VERDICT_UNAVAILABLE = "unavailable"    # LLM gave nothing usable
 VERDICT_ERROR = "error"                # exception during verification
 
 _SCOPE = "vigil_brain"
+
+# Explicitly W3C trace context, not the globally configured propagator:
+# the format is fixed by what the Go collector writes into SQLite, not by
+# whatever this process happens to be configured with.
+_traceparent_format = TraceContextTextMapPropagator()
 
 tracer = trace.get_tracer(_SCOPE)
 _meter = metrics.get_meter(_SCOPE)
@@ -127,9 +133,33 @@ def setup() -> Callable[[], None]:
     return shutdown
 
 
+def detection_link(finding) -> list[Link]:
+    """A span LINK to the collector span that detected `finding`, parsed
+    from the traceparent the collector stored alongside it.
+
+    A link, not a parent. Parent/child means "this work is PART OF that
+    operation" -- the caller waits for it, and it falls within the
+    parent's lifetime. Neither is true here: the collector's poll cycle
+    ended long ago (maybe hours), never waited for brain, and brain may
+    act on findings from many different cycles in one run. Making it a
+    child would stretch a 200ms poll trace across hours and graft brain's
+    work into a trace it isn't part of. A link says "caused by / related
+    to" without either claim -- the standard pattern for anything that
+    goes through a queue, which is exactly what the findings table is.
+    """
+    if not finding.traceparent:
+        return []
+    ctx = _traceparent_format.extract({"traceparent": finding.traceparent})
+    detected = trace.get_current_span(ctx).get_span_context()
+    if not detected.is_valid:  # malformed string -> INVALID_SPAN_CONTEXT
+        return []
+    return [Link(detected, attributes={"vigil.link.type": "detected_by"})]
+
+
 @contextmanager
 def finding_span(finding, **extra: str) -> Iterator[Span]:
-    """Root span for everything brain does with one finding.
+    """Root span for everything brain does with one finding, linked back
+    to the collector span that detected it (see detection_link).
 
     Exceptions propagate (callers already catch + print them), but are
     recorded on the span first and counted as verdict=error.
@@ -140,6 +170,8 @@ def finding_span(finding, **extra: str) -> Iterator[Span]:
         "verify_fix",
         # A NEW trace per finding, even if something else is current.
         context=trace.set_span_in_context(trace.INVALID_SPAN),
+        # Links must be given at span start (samplers may use them).
+        links=detection_link(finding),
         attributes={
             ATTR_RULE: finding.rule,
             "vigil.finding.id": finding.id,

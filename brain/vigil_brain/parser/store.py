@@ -15,6 +15,10 @@ class Finding:
     subject: str
     query: str
     detail: str
+    # W3C trace context of the collector span that detected this finding
+    # (Phase 3). None for findings recorded before the collector started
+    # writing it -- see collector/internal/store/sqlite.go.
+    traceparent: str | None = None
 
 
 def store_path() -> str:
@@ -30,8 +34,14 @@ def read_findings() -> list[Finding]:
     uri = f"file:{store_path()}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     try:
+        # brain opens the store read-only, so it can't add the column
+        # itself -- and an older collector may not have. Select NULL in
+        # its place rather than failing on a missing column.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(findings)")}
+        traceparent = "traceparent" if "traceparent" in columns else "NULL"
         cursor = conn.execute(
-            "SELECT id, recorded_at, rule, subject, query, detail FROM findings ORDER BY id"
+            f"SELECT id, recorded_at, rule, subject, query, detail, {traceparent} "
+            "FROM findings ORDER BY id"
         )
         return [Finding(*row) for row in cursor.fetchall()]
     finally:

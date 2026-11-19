@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ayushkashyap/vigil/collector/internal/metrics"
@@ -241,56 +242,77 @@ func poll[T any](ctx context.Context, c *collector, source string, fn func(conte
 	return v, err
 }
 
-// evaluate runs one group of detection rules inside a span, then records
-// and persists whatever it found.
+// evaluate runs one group of detection rules inside a span, then persists
+// and records whatever it found.
 //
 // One span per rule GROUP, not per rule: rules run inside per-row loops,
 // so a span per rule invocation would be (rules x statements) spans every
 // 5s, each microseconds long -- volume with no information. Each finding
 // instead becomes a span EVENT, which can carry high-cardinality detail
 // (subject, queryid) that must never go on a metric attribute.
+//
+// Saved BEFORE the events are added, so each event can carry the SQLite
+// row id brain will see it as -- that's the lookup key from this trace to
+// brain's verify_fix trace (search vigil.finding.id there).
 func (c *collector) evaluate(ctx context.Context, group string, run func() []rules.Finding) {
 	ctx, span := c.tracer.Start(ctx, "rules "+group)
 	defer span.End()
 
 	findings := run()
 	span.SetAttributes(attribute.Int("vigil.findings.count", len(findings)))
-	for _, f := range findings {
-		span.AddEvent("finding", trace.WithAttributes(
+
+	ids := c.reportFindings(ctx, findings)
+	for i, f := range findings {
+		attrs := []attribute.KeyValue{
 			attribute.String(telemetry.AttrRule, f.Rule),
 			attribute.String("vigil.subject", f.Subject),
 			attribute.String("vigil.detail", f.Detail),
-		))
+		}
+		if i < len(ids) {
+			attrs = append(attrs, attribute.Int64("vigil.finding.id", ids[i]))
+		}
+		span.AddEvent("finding", trace.WithAttributes(attrs...))
 		// Only the bounded rule name goes on the metric.
 		c.inst.FindingsDetected.Add(ctx, 1, metric.WithAttributes(attribute.String(telemetry.AttrRule, f.Rule)))
 	}
-
-	c.reportFindings(ctx, findings)
 }
 
 // reportFindings prints each finding and persists the whole batch in one
 // store transaction, inside its own span so store latency is visible
-// separately from rule time.
+// separately from rule time. Returns the new rows' ids (nil on failure).
 //
 // It used to be one SaveFinding (= one commit = one fsync) per finding;
 // the store.save_finding spans that replaced showed ~40ms each, most of
 // the poll cycle. See SQLiteStore.SaveFindings.
-func (c *collector) reportFindings(ctx context.Context, findings []rules.Finding) {
+func (c *collector) reportFindings(ctx context.Context, findings []rules.Finding) []int64 {
 	if len(findings) == 0 {
-		return
+		return nil
 	}
 	for _, f := range findings {
 		fmt.Printf("FINDING [%s] %s: %s\n  query=%q\n", f.Rule, f.Subject, f.Detail, f.Query)
 	}
+
+	// Serialise the CURRENT span -- the "rules <group>" span these findings
+	// came from -- as a W3C traceparent ("00-<trace id>-<span id>-<flags>").
+	// Captured before store.save_findings starts, so brain links to the
+	// detection, not to the write. The same propagator would put this in
+	// an HTTP header; here the "carrier" is a SQLite column instead.
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	traceparent := carrier.Get("traceparent")
 
 	ctx, span := c.tracer.Start(ctx, "store.save_findings", trace.WithAttributes(
 		attribute.String("db.system", "sqlite"),
 		attribute.Int("vigil.findings.count", len(findings)),
 	))
 	defer span.End()
-	if err := c.st.SaveFindings(ctx, findings); err != nil {
+	ids, err := c.st.SaveFindings(ctx, findings, traceparent)
+	if err != nil {
 		fmt.Println("failed to save findings:", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "save failed")
+		return nil
 	}
+	span.SetAttributes(attribute.Int64Slice("vigil.finding.ids", ids))
+	return ids
 }
