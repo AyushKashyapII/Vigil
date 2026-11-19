@@ -1,9 +1,13 @@
 fastapi
 uvicorn[standard]
-sqlalchemy
+# <2.1: opentelemetry-instrumentation-sqlalchemy 0.66b2 declares
+# "sqlalchemy < 2.1.0" and auto-instrumentation SILENTLY skips it otherwise.
+sqlalchemy>=2.0,<2.1
 alembic
 psycopg2-binary
 pgvector
 faker
 numpy
 requests
+opentelemetry-distro
+opentelemetry-exporter-otlp

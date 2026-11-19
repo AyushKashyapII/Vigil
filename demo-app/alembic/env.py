@@ -17,7 +17,7 @@ config = context.config
 # whatever database the app itself would connect to.
 config.set_main_option(
     "sqlalchemy.url",
-    os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/demo"),
+    os.environ.get("DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/demo"),
 )
 
 # Interpret the config file for Python logging.

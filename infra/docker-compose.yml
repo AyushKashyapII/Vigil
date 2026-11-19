@@ -29,7 +29,28 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/demo
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/demo
+      # --- OpenTelemetry (read by opentelemetry-instrument, see Dockerfile) ---
+      OTEL_SERVICE_NAME: vigil-demo-app
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=dev
+      # SigNoz runs as its own compose project (installed via Foundry, see
+      # infra/signoz/). demo-app joins SigNoz's network (below) and talks to
+      # the ingester by its service name. Going via the host's published
+      # port (host.docker.internal + host-gateway) was tried first and got
+      # "connection refused" from inside the container.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://signoz-ingester:4317}
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+      # Logs are out of scope for Phase 0 -- traces are the point here.
+      OTEL_LOGS_EXPORTER: none
+      # SQLAlchemy and psycopg2 instrumentation would BOTH record every
+      # query (two spans per statement). Keep SQLAlchemy's -- it's the layer
+      # the app actually talks to. Remove this line to see the duplication.
+      OTEL_PYTHON_DISABLED_INSTRUMENTATIONS: psycopg2
+    networks:
+      - default   # postgres etc.
+      - signoz    # SigNoz's ingester
     deploy:
       resources:
         limits:
@@ -109,3 +130,12 @@ services:
 volumes:
   pgdata:
   collector_data:
+
+networks:
+  # Created by SigNoz's own compose project (foundryctl, infra/signoz/) --
+  # not by this file. `external` means compose won't create it, so SigNoz
+  # must be up BEFORE `docker compose up` here, or this fails fast.
+  # Name read off `docker network ls`; SigNoz's docs don't state it.
+  signoz:
+    external: true
+    name: signoz-network
